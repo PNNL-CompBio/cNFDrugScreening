@@ -7,20 +7,40 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(synapser)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+
 ```
 
 ## Download drug stats
 First we need to downlod the summary stats for each organoid 
 ```{r download}
+synLogin()
+
+fits<-readr::read_tsv(synGet('syn65471817')$path)
+data<-readr::read_tsv(synGet('syn65471816')$path)
 
 ```
 
-## Including Plots
+## Plot data from drug
 
-You can also embed plots, for example:
+Here we can write a function that plots data for a drug across patients
 
 ```{r pressure, echo=FALSE}
-plot(pressure)
+
+plotDataFromDrug<-function(drugname='Imatinib'){
+  ddata<-subset(data,Drug==drugname)|>
+    dplyr::select(DOSE,viability='GROWTH',sample='improve_sample_id')|>
+    mutate(concentration=(-log10(DOSE)))
+  ggplot(ddata,aes(x=concentration,y=viability,col=sample))+geom_point()
+
+}
+
+plotDataFromDrug()
+
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

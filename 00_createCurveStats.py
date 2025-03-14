@@ -40,11 +40,13 @@ fulltab = fulltab[ncols]
 fulltab.to_csv('cohort1_drug_response.tsv',sep='\t')
 
 ###store on synapse
-syn.store(sc.File('cohort_1_drug_response.tsv',parentId='syn65471813'))
+syn.store(sc.File('cohort1_drug_response.tsv',parentId='syn65471813'))
 
+##fit curve
 script='https://raw.githubusercontent.com/PNNL-CompBio/coderdata/refs/heads/main/build/utils/fit_curve.py'
 subprocess.run(['wget',script])
 subprocess.run(['python','fit_curve.py','--input','drug_response.tsv','--output','cnfDrugOutput'])
+
 ##rename file
 os.system('mv cnfDrugOutput.0 cohort1_curves.tsv')
 syn.store(sc.File('cohort1_curves.tsv',parentId='syn65471813'))
