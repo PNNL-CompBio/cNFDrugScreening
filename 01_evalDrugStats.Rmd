@@ -34,12 +34,14 @@ Here we can write a function that plots data for a drug across patients
 plotDataFromDrug<-function(drugname='Imatinib'){
   ddata<-subset(data,Drug==drugname)|>
     dplyr::select(DOSE,viability='GROWTH',sample='improve_sample_id')|>
-    mutate(concentration=(-log10(DOSE)))
-  ggplot(ddata,aes(x=concentration,y=viability,col=sample))+geom_point()
+    mutate(log10concentration=(log10(DOSE)))
+  ggplot(ddata,aes(x=concentration,y=viability,col=sample))+geom_point()+geom_line()
 
 }
 
-plotDataFromDrug()
+plotDataFromDrug("Selumetinib")
+plotDataFromDrug("Digoxin")
+plotDataFromDrug("Onalespib")
 
 ```
 
