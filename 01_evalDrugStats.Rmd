@@ -17,11 +17,14 @@ library(tidyr)
 
 ## Download drug stats
 First we need to downlod the summary stats for each organoid 
-```{r download}
+```{r download, warning=FALSE}
 synLogin()
 
 fits<-readr::read_tsv(synGet('syn65471817')$path)
-data<-readr::read_tsv(synGet('syn65471816')$path)
+
+
+meta<-readxl::read_xlsx(syn$get('syn65595365')$path)|>
+  tidyr::separate(Specimen,into=c('Patient','Tumor'),sep='_',remove = FALSE)
 
 ```
 
@@ -29,20 +32,166 @@ data<-readr::read_tsv(synGet('syn65471816')$path)
 
 Here we can write a function that plots data for a drug across patients
 
-```{r pressure, echo=FALSE}
+```{r summary, echo=FALSE}
 
-plotDataFromDrug<-function(drugname='Imatinib'){
-  ddata<-subset(data,Drug==drugname)|>
-    dplyr::select(DOSE,viability='GROWTH',sample='improve_sample_id')|>
-    mutate(log10concentration=(log10(DOSE)))
-  ggplot(ddata,aes(x=concentration,y=viability,col=sample))+geom_point()+geom_line()
+ fits|>subset(dose_response_metric=='uM_viability')|>ggplot(aes(x=dose_response_value,y=improve_sample_id,fill=improve_sample_id,alpha=0.5))+ggridges::geom_density_ridges()+ggtitle('Viabilities across samples')
 
-}
+##we can also plot samples according to their drug response
+pcs = fits|>subset(dose_response_metric=='uM_viability')|>
+  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
+  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fill=1.0)|>
+  tibble::column_to_rownames('improve_sample_id')|>prcomp()
 
-plotDataFromDrug("Selumetinib")
-plotDataFromDrug("Digoxin")
-plotDataFromDrug("Onalespib")
+pcs$x|>as.data.frame()|>tibble::rownames_to_column('Specimen')|>left_join(meta)|>ggplot(aes(x=PC1,y=PC2,col=Patient,label=Specimen))+geom_point()+ggrepel::geom_label_repel()
 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Now compare to proteomics
+
+We created a metadata file with the aliquot number that is embedded in the file name/columns, and teased it out to create two long tables - one for global and one for phospho.
+
+```{r compare to proteomics,warning=FALSE}
+
+
+
+
+phospho<- read.table(syn$get('syn65467785')$path)|>
+  tibble::rownames_to_column('site')
+
+##logtransform##median transform
+
+pmat<-apply(log2(phospho[,2:ncol(phospho)]),2,function(x) x-median(x,na.rm=T))|>
+  as.data.frame()|>
+  mutate(site=phospho$site)
+
+plong<-pmat|>
+  tidyr::pivot_longer(1:(ncol(pmat)-1),names_to='fname',values_to='abundance')|>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9]))|>
+  mutate(aliquot=as.double(aliquot))|>
+  left_join(meta)
+
+##save to file
+readr::write_csv(plong,file='log2normMedCenteredPhospho.csv')
+syn$store(File('log2normMedCenteredPhospho.csv',parentId='syn51301417'))
+         
+
+plong$abundance[which(!is.finite(plong$abundance))]<-0
+ppcs<-plong|>dplyr::select(Specimen,abundance,site)|>
+  subset(!is.na(site))|>
+  subset(!is.na(abundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='abundance',values_fn=mean,values_fill=0)|>
+  tibble::column_to_rownames('site')|>t()|>
+  prcomp()
+
+pplot<-ppcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2)|>
+  tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Phospho samples")
+
+pplot
+
+global<-readr::read_tsv(syn$get('syn64906445')$path)
+
+##logtransform, medina transform
+
+gmat<-apply(log2(global[,6:ncol(global)]),2,function(x) x-median(x,na.rm=T))
+
+glong$abundance[which(!is.finite(glong$abundance))]<-0
+glong<-gmat|>
+  as.data.frame()|>
+  mutate(Genes=global$Genes)|>
+  tidyr::pivot_longer(1:ncol(gmat),names_to='fname',values_to='abundance')|>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9]))|>
+  mutate(aliquot=as.double(aliquot))|>
+  left_join(meta)
+         
+
+readr::write_csv(plong,file='log2normMedCenteredGlobal.csv')
+syn$store(File('log2normMedCenteredGlobal.csv',parentId='syn51301417'))
+         
+#ma<-mean(glong$abundance,na.rm=T)
+
+gpcs<-glong|>dplyr::select(Specimen,abundance,Genes)|>
+  subset(!is.na(Genes))|>
+  subset(!is.na(abundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='abundance',values_fn=mean,values_fill=0)|>
+  tibble::column_to_rownames('Genes')|>t()|>
+  prcomp()
+
+gplot<-gpcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2)|>
+  tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Global samples")
+
+gplot
+
+```
+Now we have the global and phospho and drug data for anumber of samples. 
+
+## Integrative analysis
+
+Do simple correlations to identify putative trends in the data.
+
+```{r find common samples, warning=FALSE,error=FALSE}
+
+shared<-intersect(fits$improve_sample_id,glong$Specimen)
+print(paste('Found',length(shared),'shared samples'))
+
+## a full join might be a challenge, maybe just take two matrices
+drug_dat <- fits|>subset(dose_response_metric=='uM_viability')|>
+  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
+  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean)|>
+  tibble::column_to_rownames('improve_sample_id')
+
+glob_dat<-glong|>
+  subset(Specimen%in%shared)|>
+  dplyr::select(Specimen,Genes,abundance)|>
+  tidyr::pivot_wider(names_from='Genes',values_from='abundance',values_fill=0,values_fn=mean)|>
+  tibble::column_to_rownames('Specimen')
+  
+
+phos_dat<-plong|>
+  subset(Specimen%in%shared)|>
+  dplyr::select(Specimen,site,abundance)|>
+  tidyr::pivot_wider(names_from='site',values_from='abundance',values_fill=0,values_fn=mean)|>
+  tibble::column_to_rownames('Specimen')
+
+
+gres<-cor(drug_dat[shared,],glob_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
+  as.data.frame()|>
+    tibble::rownames_to_column('drug')|>
+  tidyr::pivot_longer(cols=2:(1+ncol(glob_dat)),names_to='gene',values_to='pCor')|>
+  arrange(desc(pCor))
+
+##now lets try to get significance
+
+gsigs<-do.call(rbind,lapply(colnames(drug_dat),function(x)
+  do.call(rbind,lapply(colnames(glob_dat),function(y){
+    pval=1.0
+    try(pval<-cor.test(drug_dat[shared,x],glob_dat[shared,y],use='pairwise.complete.obs')$p.value)
+    list(corp=pval,prot=y,drug=x)
+  }
+  ))))
+
+gsig<-apply(drug_dat[shared,],2,function(x)
+  #apply(glob_dat[shared,],2,function(y)
+    cor.test(glob_dat[shared,],x,use='pairwise.complete.obs',method='pearson')$pvalue)|>
+  as.data.frame()|>
+    #tibble::rownames_to_column('drug')|>
+  tidyr::pivot_longer(cols=2:(1+ncol(glob_dat)),names_to='gene',values_to='corP')|>
+  arrange(corP)
+
+
+pres<-cor(drug_dat[shared,],phos_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
+    as.data.frame()|>
+    tibble::rownames_to_column('drug')|>
+  tidyr::pivot_longer(cols=2:(1+ncol(phos_dat)),names_to='site',values_to='pCor')|>
+  arrange(desc(pCor))
+
+##now lets look at correlations
+
+```
