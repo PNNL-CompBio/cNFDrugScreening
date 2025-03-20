@@ -42,7 +42,11 @@ pcs = fits|>subset(dose_response_metric=='uM_viability')|>
   tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fill=1.0)|>
   tibble::column_to_rownames('improve_sample_id')|>prcomp()
 
-pcs$x|>as.data.frame()|>tibble::rownames_to_column('Specimen')|>left_join(meta)|>ggplot(aes(x=PC1,y=PC2,col=Patient,label=Specimen))+geom_point()+ggrepel::geom_label_repel()
+pcs$x|>as.data.frame()|>tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+  dplyr::select(PC1,PC2,Patient,Specimen)|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,col=Patient,label=Specimen))+geom_point()+ggrepel::geom_label_repel()
 
 ```
 
@@ -88,6 +92,8 @@ pplot<-ppcs$x|>
   dplyr::select(PC1,PC2)|>
   tibble::rownames_to_column('Specimen')|>
   left_join(meta)|>
+  dplyr::select(PC1,PC2,Specimen,Patient)|>
+  distinct()|>
   ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Phospho samples")
 
 pplot
@@ -98,7 +104,6 @@ global<-readr::read_tsv(syn$get('syn64906445')$path)
 
 gmat<-apply(log2(global[,6:ncol(global)]),2,function(x) x-median(x,na.rm=T))
 
-glong$abundance[which(!is.finite(glong$abundance))]<-0
 glong<-gmat|>
   as.data.frame()|>
   mutate(Genes=global$Genes)|>
@@ -112,6 +117,7 @@ readr::write_csv(plong,file='log2normMedCenteredGlobal.csv')
 syn$store(File('log2normMedCenteredGlobal.csv',parentId='syn51301417'))
          
 #ma<-mean(glong$abundance,na.rm=T)
+glong$abundance[which(!is.finite(glong$abundance))]<-0
 
 gpcs<-glong|>dplyr::select(Specimen,abundance,Genes)|>
   subset(!is.na(Genes))|>
@@ -125,6 +131,8 @@ gplot<-gpcs$x|>
   dplyr::select(PC1,PC2)|>
   tibble::rownames_to_column('Specimen')|>
   left_join(meta)|>
+    dplyr::select(PC1,PC2,Specimen,Patient)|>
+  distinct()|>
   ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Global samples")
 
 gplot
@@ -169,22 +177,20 @@ gres<-cor(drug_dat[shared,],glob_dat[shared,],use='pairwise.complete.obs',method
 
 ##now lets try to get significance
 
-gsigs<-do.call(rbind,lapply(colnames(drug_dat),function(x)
+gsig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
   do.call(rbind,lapply(colnames(glob_dat),function(y){
-    pval=1.0
-    try(pval<-cor.test(drug_dat[shared,x],glob_dat[shared,y],use='pairwise.complete.obs')$p.value)
-    list(corp=pval,prot=y,drug=x)
-  }
-  ))))
-
-gsig<-apply(drug_dat[shared,],2,function(x)
-  #apply(glob_dat[shared,],2,function(y)
-    cor.test(glob_dat[shared,],x,use='pairwise.complete.obs',method='pearson')$pvalue)|>
+    pval<-1.0
+    try(pval<-cor.test(drug_dat[shared,x],glob_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    return(c(corp=pval,drug=x,gene=y))
+    }
+    ))|>as.data.frame()|>
+    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+  }))|>
   as.data.frame()|>
-    #tibble::rownames_to_column('drug')|>
-  tidyr::pivot_longer(cols=2:(1+ncol(glob_dat)),names_to='gene',values_to='corP')|>
-  arrange(corP)
+  mutate(drug=unlist(drug))|>
+  mutate(gene=unlist(gene))
 
+fullcors<-gres|>left_join(data.frame(gsig))|>mutate(data='global')
 
 pres<-cor(drug_dat[shared,],phos_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
     as.data.frame()|>
@@ -193,5 +199,79 @@ pres<-cor(drug_dat[shared,],phos_dat[shared,],use='pairwise.complete.obs',method
   arrange(desc(pCor))
 
 ##now lets look at correlations
+
+psig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
+  do.call(rbind,lapply(colnames(phos_dat),function(y){
+    pval<-1.0
+    try(pval<-cor.test(drug_dat[shared,x],phos_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    return(c(corp=pval,drug=x,gene=y))
+    }
+    ))|>as.data.frame()|>
+    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+  }))|>as.data.frame()
+
+fullpcors<-pres|>rename(gene='site')|>left_join(data.frame(psig))|>mutate(data='phospho')
+
+#combine all correlations
+allcor<-rbind(fullcors,fullpcors)|>
+  mutate(direction=ifelse(pCor<0,'neg','pos'))
+
+
+##lets count the correlations and plot
+
+corsummary<-allcor|>subset(bh_p<0.1)|>
+  group_by(drug,data,direction)|>
+  summarize(features=n(),meanCor=mean(pCor))
+corsummary|>
+  subset(features>1)|>
+  ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
+
+```
+Now that we have the correlations we can cherry pick some examples to showcase
+
+```{r plot cors}
+
+plotCors<-function(featureslist,druglist,dataType='global'){
+  ##subset a list of features and drugs and plot those in a graph
+  require(ggplot2)
+  if(dataType=='global'){
+    ptab<-glong|>dplyr::rename(feature='Genes')
+  }else{
+    ptab<-plong|>dplyr::rename(feature='site')
+  }
+  dtab<-fits|>
+    subset(dose_response_metric=='uM_viability')|>
+    dplyr::rename(Specimen='improve_sample_id',Drug='improve_drug_id')|>
+    subset(Drug%in%druglist)
+  
+  ftab<-subset(ptab,feature%in%featureslist)|>left_join(dtab)|>
+    subset(!is.na(Drug))
+  ftab|>ggplot(aes(x=abundance,y=dose_response_value,col=Drug,shape=Patient))+geom_point()+facet_grid(feature~.)
+}
+
+druglist<-c('Onalespib','Crizotinib')
+features<-subset(allcor,drug%in%druglist)|>
+  subset(bh_p<0.05)|>
+  subset(data=='global')
+
+plotCors(features$gene,druglist)
+
+
+```
+
+now we can visualize correlations
+```{r check out HSP90s}
+
+hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
+
+cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
+print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
+
+plotCors(cor_hsps$gene,'Onalespib')
+
+hspp<-unique(plong$site[grep('^HSP',plong$site)])
+cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.05)
+print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
+
 
 ```

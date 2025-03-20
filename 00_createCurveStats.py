@@ -8,25 +8,38 @@ import os
 import subprocess
 syn = sc.login()
 ##this is a pain, need to move to file
-curtabs={'NF0019_T1':"syn64954302",\
-        'NF0017_T3':"syn64954273",\
-        'NF0023_T2':"syn64938448",\
-        'NF0022_T1':"syn64938446",\
-        'NF0020_T1':"syn64938445",\
-        'NF0019_T1':"syn64938444",\
-        'NF0018_T1':"syn64938443"}
+
+filelist = syn.tableQuery("select id,individualID,specimenID from syn51301431 where dataType='drugScreen'").asDataFrame()
+
+
+###pull files
+
+singledose = []
+multidose = []
+for index,row in filelist.iterrows():
+  #print(row['id'])
+  dfile = pd.read_csv(syn.get(row['id']).path)
+  dfile['improve_sample_id'] = row['specimenID']
+
+  dfile = dfile.reset_index()
+    
+  #get single micromolar values
+  sings = dfile[dfile.Concentration_uM==1]
+  
+  ##get counts of drugs
+  dcounts = dfile.groupby("Drug").count().reset_index()
+  more = dcounts[dcounts.Concentration_uM>1]['Drug']
+  
 
   
-###pull files
-patlist=[]
-for pat, id in curtabs.items():
-  tab = syn.tableQuery('select * from '+id).asDataFrame()
-  tab["improve_sample_id"] = pat
-  tab = tab.reset_index()
-  print(tab)
-  patlist.append(tab)
-  
-fulltab = pd.concat(patlist)
+  singledose.append(sings)
+  multidose.append(dfile[dfile.Drug.isin(set(more))])
+
+
+####first fit multidose curves...
+
+fulltab = pd.concat(multidose)
+#print(fulltab)
 fulltab['DOSE']=fulltab.Concentration_uM+0.0001
 fulltab['GROWTH']=fulltab.Viability_percentage
 fulltab['time']=120
@@ -37,19 +50,41 @@ fulltab['source']='synapse'
 ncols=['DOSE','GROWTH','study','source','improve_sample_id','Drug','time','time_unit']
 fulltab = fulltab[ncols]
 ##change file headers to DOSE/RESPONSE values needed by other script
-fulltab.to_csv('cohort1_drug_response.tsv',sep='\t')
+fulltab.to_csv('drug_response.tsv',sep='\t')
 
-###store on synapse
-syn.store(sc.File('cohort1_drug_response.tsv',parentId='syn65471813'))
 
 ##fit curve
 script='https://raw.githubusercontent.com/PNNL-CompBio/coderdata/refs/heads/main/build/utils/fit_curve.py'
 subprocess.run(['wget',script])
 subprocess.run(['python','fit_curve.py','--input','drug_response.tsv','--output','cnfDrugOutput'])
 
-##rename file
-os.system('mv cnfDrugOutput.0 cohort1_curves.tsv')
-syn.store(sc.File('cohort1_curves.tsv',parentId='syn65471813'))
 
+#####now we can take single drug points and format those
+stab = pd.concat(singledose)
+
+stab['time']=120
+stab['time_unit']='hours'
+stab['study']='cnfPDO'
+stab['source']='synapse'
+stab['improve_drug_id']=stab.Drug
+stab['dose_response_value'] = stab.Viability_percentage/100.00
+stab['dose_response_metric'] = 'uM_viability'
+
+curve_cols = ['source','improve_sample_id','improve_drug_id','study','time','time_unit',
+              'dose_response_metric','dose_response_value']
+
+
+otab = pd.read_csv('cnfDrugOutput.0',sep='\t')
+stab = stab[curve_cols]
+
+
+newtab =pd.concat([otab,stab])
+
+##rename file
+newtab.to_csv('cohort1_curves.tsv',sep='\t',index=False)
+
+##now add in single-point drug measurements
 
 #store on synapse
+syn.store(sc.File('cohort1_curves.tsv',parentId='syn65471813'))
+
