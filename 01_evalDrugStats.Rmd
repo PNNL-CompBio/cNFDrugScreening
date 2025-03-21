@@ -140,20 +140,14 @@ gplot
 ```
 Now we have the global and phospho and drug data for anumber of samples. 
 
-## Integrative analysis
+## Format protein data to collect correlation values
 
 Do simple correlations to identify putative trends in the data.
 
-```{r find common samples, warning=FALSE,error=FALSE}
+```{r make matrices of proteins}
 
 shared<-intersect(fits$improve_sample_id,glong$Specimen)
 print(paste('Found',length(shared),'shared samples'))
-
-## a full join might be a challenge, maybe just take two matrices
-drug_dat <- fits|>subset(dose_response_metric=='uM_viability')|>
-  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
-  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean)|>
-  tibble::column_to_rownames('improve_sample_id')
 
 glob_dat<-glong|>
   subset(Specimen%in%shared)|>
@@ -168,6 +162,21 @@ phos_dat<-plong|>
   tidyr::pivot_wider(names_from='site',values_from='abundance',values_fill=0,values_fn=mean)|>
   tibble::column_to_rownames('Specimen')
 
+
+```
+
+### Correlate uM viabilities with protein/phosphosite expression
+
+Look at uM viabilities and see what we can find that correlates with expression
+
+```{r find common samples, warning=FALSE,error=FALSE}
+
+
+## a full join might be a challenge, maybe just take two matrices
+drug_dat <- fits|>subset(dose_response_metric=='uM_viability')|>
+  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
+  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean)|>
+  tibble::column_to_rownames('improve_sample_id')
 
 gres<-cor(drug_dat[shared,],glob_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
   as.data.frame()|>
@@ -273,5 +282,193 @@ hspp<-unique(plong$site[grep('^HSP',plong$site)])
 cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.05)
 print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
 
+
+```
+
+### Now lets look only at IC50 values
+
+There are a few drugs for which we have IC50 values
+
+```{r check ic50 cors,warning=FALSE,error=FALSE}
+
+ifits<-subset(fits,dose_response_metric=='fit_ic50')
+
+shared<-intersect(ifits$improve_sample_id,glong$Specimen)
+print(paste('Found',length(shared),'shared samples'))
+
+## a full join might be a challenge, maybe just take two matrices
+drug_dat <- ifits|>
+  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
+  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean)|>
+  tibble::column_to_rownames('improve_sample_id')
+
+gres<-cor(drug_dat[shared,],glob_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
+  as.data.frame()|>
+    tibble::rownames_to_column('drug')|>
+  tidyr::pivot_longer(cols=2:(1+ncol(glob_dat)),names_to='gene',values_to='pCor')|>
+  arrange(desc(pCor))
+
+##now lets try to get significance
+
+gsig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
+  do.call(rbind,lapply(colnames(glob_dat),function(y){
+    pval<-1.0
+    try(pval<-cor.test(drug_dat[shared,x],glob_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    return(c(corp=pval,drug=x,gene=y))
+    }
+    ))|>as.data.frame()|>
+    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+  }))|>
+  as.data.frame()|>
+  mutate(drug=unlist(drug))|>
+  mutate(gene=unlist(gene))
+
+fullcors<-gres|>left_join(data.frame(gsig))|>mutate(data='global')
+
+pres<-cor(drug_dat[shared,],phos_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
+    as.data.frame()|>
+    tibble::rownames_to_column('drug')|>
+  tidyr::pivot_longer(cols=2:(1+ncol(phos_dat)),names_to='site',values_to='pCor')|>
+  arrange(desc(pCor))
+
+##now lets look at correlations
+
+psig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
+  do.call(rbind,lapply(colnames(phos_dat),function(y){
+    pval<-1.0
+    try(pval<-cor.test(drug_dat[shared,x],phos_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    return(c(corp=pval,drug=x,gene=y))
+    }
+    ))|>as.data.frame()|>
+    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+  }))|>as.data.frame()
+
+fullpcors<-pres|>rename(gene='site')|>left_join(data.frame(psig))|>mutate(data='phospho')
+
+#combine all correlations
+allcor<-rbind(fullcors,fullpcors)|>
+  mutate(direction=ifelse(pCor<0,'neg','pos'))
+
+
+##lets count the correlations and plot
+
+corsummary<-allcor|>subset(bh_p<0.1)|>
+  group_by(drug,data,direction)|>
+  summarize(features=n(),meanCor=mean(pCor))
+
+corsummary|>
+  #subset(features>1)|>
+  ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
+
+```
+
+Again we have onalespib with numerous significantly correlated proteins, and one phosphosite for digoxin showing up .
+
+```{r plot individual sites}
+
+druglist<-c('Onalespib')
+features<-subset(allcor,drug%in%druglist)|>
+  subset(bh_p<0.1)|>
+  subset(data=='global')
+
+plotCors(features$gene,druglist)
+
+
+druglist<-c('Digoxin')
+features<-subset(allcor,drug%in%druglist)|>
+  subset(bh_p<0.1)|>
+  subset(data=='phospho')
+
+plotCors(features$gene,druglist,data='phospho')
+
+```
+
+Now we can check the HSP proteins directly
+
+```{r HSP correlation}
+hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
+
+cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
+print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
+
+plotCors(cor_hsps$gene,'Onalespib')
+
+hspp<-unique(plong$site[grep('^HSP',plong$site)])
+cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.1)
+print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
+```
+
+The IC50 result is similar to the viability. Now we can check AUC
+
+```{r auc hsp check}
+
+ifits<-subset(fits,dose_response_metric=='fit_auc')
+
+shared<-intersect(ifits$improve_sample_id,glong$Specimen)
+print(paste('Found',length(shared),'shared samples'))
+
+## a full join might be a challenge, maybe just take two matrices
+drug_dat <- ifits|>
+  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
+  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean)|>
+  tibble::column_to_rownames('improve_sample_id')
+
+gres<-cor(drug_dat[shared,],glob_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
+  as.data.frame()|>
+    tibble::rownames_to_column('drug')|>
+  tidyr::pivot_longer(cols=2:(1+ncol(glob_dat)),names_to='gene',values_to='pCor')|>
+  arrange(desc(pCor))
+
+##now lets try to get significance
+
+gsig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
+  do.call(rbind,lapply(colnames(glob_dat),function(y){
+    pval<-1.0
+    try(pval<-cor.test(drug_dat[shared,x],glob_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    return(c(corp=pval,drug=x,gene=y))
+    }
+    ))|>as.data.frame()|>
+    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+  }))|>
+  as.data.frame()|>
+  mutate(drug=unlist(drug))|>
+  mutate(gene=unlist(gene))
+
+fullcors<-gres|>left_join(data.frame(gsig))|>mutate(data='global')
+
+pres<-cor(drug_dat[shared,],phos_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
+    as.data.frame()|>
+    tibble::rownames_to_column('drug')|>
+  tidyr::pivot_longer(cols=2:(1+ncol(phos_dat)),names_to='site',values_to='pCor')|>
+  arrange(desc(pCor))
+
+##now lets look at correlations
+
+psig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
+  do.call(rbind,lapply(colnames(phos_dat),function(y){
+    pval<-1.0
+    try(pval<-cor.test(drug_dat[shared,x],phos_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    return(c(corp=pval,drug=x,gene=y))
+    }
+    ))|>as.data.frame()|>
+    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+  }))|>as.data.frame()
+
+fullpcors<-pres|>rename(gene='site')|>left_join(data.frame(psig))|>mutate(data='phospho')
+
+#combine all correlations
+allcor<-rbind(fullcors,fullpcors)|>
+  mutate(direction=ifelse(pCor<0,'neg','pos'))
+
+
+##lets count the correlations and plot
+
+corsummary<-allcor|>subset(bh_p<0.1)|>
+  group_by(drug,data,direction)|>
+  summarize(features=n(),meanCor=mean(pCor))
+
+corsummary|>
+  #subset(features>1)|>
+  ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
 
 ```
