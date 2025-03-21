@@ -400,9 +400,9 @@ print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hsp
 
 The IC50 result is similar to the viability. Now we can check AUC
 
-```{r auc hsp check}
+```{r auc hsp check, error=FALSE, warning=FALSE}
 
-ifits<-subset(fits,dose_response_metric=='fit_auc')
+ifits<-subset(fits,dose_response_metric=='auc')
 
 shared<-intersect(ifits$improve_sample_id,glong$Specimen)
 print(paste('Found',length(shared),'shared samples'))
@@ -471,4 +471,17 @@ corsummary|>
   #subset(features>1)|>
   ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
 
+```
+```{r HSP correlation}
+hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
+
+cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
+print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
+cor_hsps
+
+plotCors(cor_hsps$gene,'Onalespib')
+
+hspp<-unique(plong$site[grep('^HSP',plong$site)])
+cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.1)
+print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
 ```
