@@ -72,6 +72,8 @@ plong<-pmat|>
   tidyr::pivot_longer(1:(ncol(pmat)-1),names_to='fname',values_to='abundance')|>
   mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9]))|>
   mutate(aliquot=as.double(aliquot))|>
+  group_by(site,fname,aliquot)|>
+  summarize(meanAbundance=mean(abundance))|>
   left_join(meta)
 
 ##save to file
@@ -79,11 +81,11 @@ readr::write_csv(plong,file='log2normMedCenteredPhospho.csv')
 syn$store(File('log2normMedCenteredPhospho.csv',parentId='syn51301417'))
          
 
-plong$abundance[which(!is.finite(plong$abundance))]<-0
-ppcs<-plong|>dplyr::select(Specimen,abundance,site)|>
+plong$meanAbundance[which(!is.finite(plong$meanAbundance))]<-0
+ppcs<-plong|>ungroup()|>dplyr::select(Specimen,meanAbundance,site)|>
   subset(!is.na(site))|>
-  subset(!is.na(abundance))|>
-  tidyr::pivot_wider(names_from='Specimen',values_from='abundance',values_fn=mean,values_fill=0)|>
+  subset(!is.na(meanAbundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',values_fn=mean,values_fill=0)|>
   tibble::column_to_rownames('site')|>t()|>
   prcomp()
 
@@ -97,7 +99,7 @@ pplot<-ppcs$x|>
   ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Phospho samples")
 
 pplot
-
+ggsave('phosphoPCA.pdf')
 global<-readr::read_tsv(syn$get('syn64906445')$path)
 
 ##logtransform, medina transform
@@ -110,19 +112,25 @@ glong<-gmat|>
   tidyr::pivot_longer(1:ncol(gmat),names_to='fname',values_to='abundance')|>
   mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9]))|>
   mutate(aliquot=as.double(aliquot))|>
+  group_by(Genes,fname,aliquot)|>
+  summarize(meanAbundance=mean(abundance))|>
   left_join(meta)
          
+
+#dupes<-global|>group_by(Genes)|>summarize(numIso=n())|>
+#  subset(numIso>1)
 
 readr::write_csv(plong,file='log2normMedCenteredGlobal.csv')
 syn$store(File('log2normMedCenteredGlobal.csv',parentId='syn51301417'))
          
 #ma<-mean(glong$abundance,na.rm=T)
-glong$abundance[which(!is.finite(glong$abundance))]<-0
+glong$meanAbundance[which(!is.finite(glong$meanAbundance))]<-0
 
-gpcs<-glong|>dplyr::select(Specimen,abundance,Genes)|>
+gpcs<-glong|>ungroup()|>
+  dplyr::select(Specimen,meanAbundance,Genes)|>
   subset(!is.na(Genes))|>
-  subset(!is.na(abundance))|>
-  tidyr::pivot_wider(names_from='Specimen',values_from='abundance',values_fn=mean,values_fill=0)|>
+  subset(!is.na(meanAbundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',values_fn=mean,values_fill=0)|>
   tibble::column_to_rownames('Genes')|>t()|>
   prcomp()
 
@@ -137,6 +145,8 @@ gplot<-gpcs$x|>
 
 gplot
 
+ggsave('globalPCA.pdf')
+
 ```
 Now we have the global and phospho and drug data for anumber of samples. 
 
@@ -149,17 +159,17 @@ Do simple correlations to identify putative trends in the data.
 shared<-intersect(fits$improve_sample_id,glong$Specimen)
 print(paste('Found',length(shared),'shared samples'))
 
-glob_dat<-glong|>
+glob_dat<-glong|>ungroup()|>
   subset(Specimen%in%shared)|>
-  dplyr::select(Specimen,Genes,abundance)|>
-  tidyr::pivot_wider(names_from='Genes',values_from='abundance',values_fill=0,values_fn=mean)|>
+  dplyr::select(Specimen,Genes,meanAbundance)|>
+  tidyr::pivot_wider(names_from='Genes',values_from='meanAbundance',values_fill=0,values_fn=mean)|>
   tibble::column_to_rownames('Specimen')
   
 
-phos_dat<-plong|>
+phos_dat<-plong|>ungroup()|>
   subset(Specimen%in%shared)|>
-  dplyr::select(Specimen,site,abundance)|>
-  tidyr::pivot_wider(names_from='site',values_from='abundance',values_fill=0,values_fn=mean)|>
+  dplyr::select(Specimen,site,meanAbundance)|>
+  tidyr::pivot_wider(names_from='site',values_from='meanAbundance',values_fill=0,values_fn=mean)|>
   tibble::column_to_rownames('Specimen')
 
 
@@ -193,7 +203,7 @@ gsig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
     return(c(corp=pval,drug=x,gene=y))
     }
     ))|>as.data.frame()|>
-    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+    mutate(fdr=p.adjust(unlist(corp),method='fdr'))
   }))|>
   as.data.frame()|>
   mutate(drug=unlist(drug))|>
@@ -212,11 +222,12 @@ pres<-cor(drug_dat[shared,],phos_dat[shared,],use='pairwise.complete.obs',method
 psig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
   do.call(rbind,lapply(colnames(phos_dat),function(y){
     pval<-1.0
-    try(pval<-cor.test(drug_dat[shared,x],phos_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    try(pval<-cor.test(drug_dat[shared,x],phos_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,
+        silent=TRUE)
     return(c(corp=pval,drug=x,gene=y))
     }
     ))|>as.data.frame()|>
-    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+    mutate(fdr=p.adjust(unlist(corp),method='fdr'))
   }))|>as.data.frame()
 
 fullpcors<-pres|>rename(gene='site')|>left_join(data.frame(psig))|>mutate(data='phospho')
@@ -225,22 +236,25 @@ fullpcors<-pres|>rename(gene='site')|>left_join(data.frame(psig))|>mutate(data='
 allcor<-rbind(fullcors,fullpcors)|>
   mutate(direction=ifelse(pCor<0,'neg','pos'))
 
-
+readr::write_csv(allcor,'globalPhosphoDrugCors.csv')
+synapser::synStore(synapser::File('globalPhosphoDrugCors.csv',parentId='syn66313784'))
 ##lets count the correlations and plot
 
-corsummary<-allcor|>subset(bh_p<0.1)|>
+corsummary<-allcor|>subset(fdr<0.1)|>
   group_by(drug,data,direction)|>
   summarize(features=n(),meanCor=mean(pCor))
 corsummary|>
   subset(features>1)|>
   ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
 
+ggsave('correlatedFeaturesFDR0.1.pdf')
+
 ```
 Now that we have the correlations we can cherry pick some examples to showcase
 
 ```{r plot cors}
 
-plotCors<-function(featureslist,druglist,dataType='global'){
+plotCors<-function(features,druglist,dataType='global'){
   ##subset a list of features and drugs and plot those in a graph
   require(ggplot2)
   if(dataType=='global'){
@@ -253,18 +267,19 @@ plotCors<-function(featureslist,druglist,dataType='global'){
     dplyr::rename(Specimen='improve_sample_id',Drug='improve_drug_id')|>
     subset(Drug%in%druglist)
   
-  ftab<-subset(ptab,feature%in%featureslist)|>left_join(dtab)|>
+  
+  ftab<-features|>left_join(ptab)|>left_join(dtab)|>
     subset(!is.na(Drug))
-  ftab|>ggplot(aes(x=abundance,y=dose_response_value,col=Drug,shape=Patient))+geom_point()+facet_grid(feature~.)
+  ftab|>ggplot(aes(x=meanAbundance,y=dose_response_value,col=Patient,size=2))+geom_point()+facet_grid(feature~Drug)
 }
 
-druglist<-c('Onalespib','Crizotinib')
+druglist<-c('Onalespib','Selumetinib')
 features<-subset(allcor,drug%in%druglist)|>
-  subset(bh_p<0.05)|>
+  subset(fdr<0.05)|>
   subset(data=='global')
 
-plotCors(features$gene,druglist)
-
+plotCors(rename(features,feature='gene'),druglist)
+ggsave('onalespibSelumetinibFDR0.05Cors.pdf')
 
 ```
 
@@ -276,10 +291,12 @@ hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
 print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
 
-plotCors(cor_hsps$gene,'Onalespib')
+plotCors(rename(cor_hsps,feature='gene'),c('Onalespib','Selumetinib'))
+
+ggsave('hspCorsOnaSelu.pdf',width=8,height=14)
 
 hspp<-unique(plong$site[grep('^HSP',plong$site)])
-cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.05)
+cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.01)
 print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
 
 
@@ -317,7 +334,7 @@ gsig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
     return(c(corp=pval,drug=x,gene=y))
     }
     ))|>as.data.frame()|>
-    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+    mutate(fdr=p.adjust(unlist(corp),method='fdr'))
   }))|>
   as.data.frame()|>
   mutate(drug=unlist(drug))|>
@@ -340,7 +357,7 @@ psig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
     return(c(corp=pval,drug=x,gene=y))
     }
     ))|>as.data.frame()|>
-    mutate(bh_p=p.adjust(unlist(corp),method='BH'))
+    mutate(fdr=p.adjust(unlist(corp),method='fdr'))
   }))|>as.data.frame()
 
 fullpcors<-pres|>rename(gene='site')|>left_join(data.frame(psig))|>mutate(data='phospho')
@@ -352,7 +369,7 @@ allcor<-rbind(fullcors,fullpcors)|>
 
 ##lets count the correlations and plot
 
-corsummary<-allcor|>subset(bh_p<0.1)|>
+corsummary<-allcor|>subset(fdr<0.1)|>
   group_by(drug,data,direction)|>
   summarize(features=n(),meanCor=mean(pCor))
 
@@ -368,18 +385,20 @@ Again we have onalespib with numerous significantly correlated proteins, and one
 
 druglist<-c('Onalespib')
 features<-subset(allcor,drug%in%druglist)|>
-  subset(bh_p<0.1)|>
+  subset(fdr<0.05)|>
   subset(data=='global')
 
-plotCors(features$gene,druglist)
+plotCors(rename(features,feature='gene'),druglist)
 
 
 druglist<-c('Digoxin')
 features<-subset(allcor,drug%in%druglist)|>
-  subset(bh_p<0.1)|>
+  subset(fdr<0.1)|>
   subset(data=='phospho')
 
-plotCors(features$gene,druglist,data='phospho')
+plotCors(rename(features,feature='gene'),druglist,data='phospho')
+
+
 
 ```
 
@@ -471,8 +490,10 @@ corsummary|>
   #subset(features>1)|>
   ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
 
+print(corsummary)
+
 ```
-```{r HSP correlation}
+```{r HSP correlation again}
 hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 
 cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
