@@ -1,5 +1,5 @@
 ---
-title: "Ex21 Phospho proteomics"
+title: "Phospho proteomics"
 output: html_document
 ---
 
