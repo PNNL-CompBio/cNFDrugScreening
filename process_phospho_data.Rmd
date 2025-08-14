@@ -1,0 +1,111 @@
+---
+title: "Ex21 Phospho proteomics"
+output: html_document
+---
+
+The phospho proteomics pipeline uses the R package [PlexedPiper](https://github.com/vladpetyuk/PlexedPiper). It also requires a connection to the DMS to access data packages.
+
+```{r, echo=F}
+library(knitr)
+knitr::opts_chunk$set(message=F, warning=F)
+t0 <- Sys.time(); print(t0)
+```
+
+```{r setup}
+library(PlexedPiper)
+library(dplyr)
+library(PNNL.DMS.utils)
+library(Biostrings)
+library(tidyverse)
+
+data_folder <- "data/phospho_data"
+crosstab_prefix <- "cNF_organoid"
+
+dir.create(data_folder)
+```
+
+# Process MS-GF+ data
+
+MS-GF+ data is processed in several steps. First, read MS-GF+ output from the DMS. (This step can take a while).
+
+```{r read_peptide_data}
+# load results
+pep_data <- read.table(file.path(data_folder,"DIA_Phospho_FP_Results.tsv"), sep="\t", header = TRUE) # 13625
+
+# get protein start
+pep_info <- read.table(file.path(data_folder,"Phospho_Peptide_reduced.txt"), sep="\t", header = TRUE)
+colnames(pep_info)[1] <- "Stripped.Sequence" # match stripped sequence colname in other file
+colnames(pep_info)[3] <- "Protein.Ids"
+colnames(pep_info)[4] <- "Genes"
+id.cols <- c("Stripped.Sequence", "Protein.Ids", "Genes")
+#id.cols <- c("Stripped.Sequence", "Protein.Ids")
+pep_info2 <- dplyr::distinct(pep_info[,c(id.cols, "Protein.Start")])
+pep_data <- merge(pep_data, pep_info2, by=id.cols, all.x = TRUE) # 13265
+
+# only keep phospho mods
+pep_data <- pep_data[grepl("(UniMod:21)", pep_data$Modified.Sequence),] # 12244
+pep_data$Peptide <- gsub("(UniMod:21)","*",pep_data$Modified.Sequence, fixed=TRUE)
+pep_data$Peptide <- gsub("(UniMod:4)","",pep_data$Peptide, fixed=TRUE)
+pep_data$Peptide <- gsub("(UniMod:35)","",pep_data$Peptide, fixed=TRUE)
+pep_data$Peptide <- gsub("(UniMod:1)","",pep_data$Peptide, fixed=TRUE)
+
+# only keep rows with known protein start
+pep_data <- pep_data[!is.na(pep_data$Protein.Start),] # 6018
+```
+
+
+## Map mod sites
+```{r map_mod_sites}
+# split each sequence by phospho mod
+splitSeq <- strsplit(pep_data$Peptide, "[*]")
+pep_data$Site <- NA
+for (i in 1:nrow(pep_data)) {
+  tempSplit <- splitSeq[[i]]
+  
+  counter <- as.numeric(pep_data$Protein.Start[i])
+  allSites <- c()
+  for (j in 1:(length(tempSplit)-1)) {
+    # determine phospho mod type (e.g., S, T, Y)
+    tempMod <- substr(tempSplit[j], nchar(tempSplit[j]), nchar(tempSplit[j]))
+  
+    # calculate phospho site number
+    counter <- counter + nchar(tempSplit[j]) - 2 + j
+    tempSite <- paste0(tempMod, counter, tolower(tempMod))
+    allSites <- paste0(allSites, tempSite)
+  }
+  pep_data$Site[i] <- allSites
+}
+pep_data$SUB_SITE <- paste0(pep_data$Genes, "-", pep_data$Site)
+```
+
+### create crosstabs
+``` {r create_crosstabs}
+# try filtering
+pep_data2 <- pep_data[pep_data$STY.79.96633.Best.Localization > 0.6,]
+pep_data3 <- pep_data[pep_data$STY.79.96633.Best.Localization > 0.7,]
+
+# sum across duplicate site IDs
+dataCols <- colnames(pep_data)[11:31]
+tab <- aggregate(. ~ SUB_SITE, data = pep_data[,c("SUB_SITE",dataCols)], sum) # 4172
+tab2 <- aggregate(. ~ SUB_SITE, data = pep_data2[,c("SUB_SITE",dataCols)], sum) # 3168
+tab3 <- aggregate(. ~ SUB_SITE, data = pep_data3[,c("SUB_SITE",dataCols)], sum) # 3021
+
+rownames(tab) <- tab$SUB_SITE
+tab$SUB_SITE <- NULL
+rownames(tab2) <- tab2$SUB_SITE
+tab2$SUB_SITE <- NULL
+rownames(tab3) <- tab3$SUB_SITE
+tab3$SUB_SITE <- NULL
+
+# save crosstabs
+write.table(tab, file=file.path(data_folder, "DIA_Phospho_FP_Results_SiteID.txt"),
+            quote=F, sep="\t") # 4172 rows
+write.table(tab2, file=file.path(data_folder, "DIA_Phospho_FP_Results_SiteID_minBest0.6.txt"),
+            quote=F, sep="\t") # 3168 rows
+write.table(tab3, file=file.path(data_folder, "DIA_Phospho_FP_Results_SiteID_minBest0.7.txt"),
+            quote=F, sep="\t") # 3021 rows
+write.table(pep_data, file=file.path(data_folder, "DIA_Phospho_FP_Results_SiteID_beforeSum.txt"),
+            quote=F, sep="\t") # 10774 rows
+```
+
+
