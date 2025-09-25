@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-cNF Proteomics Pipeline — simple, no-CLI
+cNF Proteomics Pipeline (Cohort 1)
 
-Runs all phases by default:
-  1) Synapse recursive inventory (+ optional downloads)
-  2) Proposed annotations + per-sample splits + Age/Sex merge (+ optional stamping)
+Runs the following 3 steps:
+  1) Download All data and Metadata from Synapse
+  2) Propose annotations & perform per-sample splits. Get sex/age.
   3) Package under "Proteomic Data (Cohort 1)" and upload to Synapse with annotations
 """
 
@@ -15,8 +15,9 @@ import shutil
 import hashlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-
 import pandas as pd
+import synapseclient
+from synapseclient import Folder,File
 
 # =============================================================================
 # CONFIG — edit here if needed (no CLI)
@@ -26,41 +27,36 @@ import pandas as pd
 VERBOSE = False  # set True to see progress logs
 
 # --- Step 1: Inventory / downloads
-PARENT_SYN_ID            = "syn51301417"       # Source Synapse folder for raw/normalized files
-DOWNLOAD_FILES           = True                # If False, inventory only (no file contents)
-DOWNLOAD_DIR             = Path("step1_downloads")
-INVENTORY_CSV            = Path("step1_inventory_existing_files.csv")
+PARENT_SYN_ID = "syn51301417"       # Source Synapse folder for raw/normalized files
+DOWNLOAD_FILES = True                # If False, inventory only (no file contents)
+DOWNLOAD_DIR = Path("step1_downloads")
+INVENTORY_CSV = Path("step1_inventory_existing_files.csv")
 
-# --- Step 2 inputs (now includes former 2 → 3.5)
-PROTEOMICS_FILES = [
-    "step1_downloads/DIA_Global_DiaNN_Results.tsv",
-    "step1_downloads/DIA_Global_FP_Results.tsv",
-]
-PHOSPHO_FILES = [
-    "step1_downloads/DIA_Phospho_FP_Results.tsv",
-]
-PHOSPHO_SITEID_FILE      = "step1_downloads/DIA_Phospho_FP_Results_SiteID.txt"
+# --- Step 2: inputs
+PROTEOMICS_FILES = ["step1_downloads/DIA_Global_DiaNN_Results.tsv", "step1_downloads/DIA_Global_FP_Results.tsv"]
+PHOSPHO_FILES = ["step1_downloads/DIA_Phospho_FP_Results.tsv"]
+PHOSPHO_SITEID_FILE = "step1_downloads/DIA_Phospho_FP_Results_SiteID.txt"
 
-# Metadata (can be multiple Excel sheets)
+# Metadata
 META_FILES = [
     {"path": "metadata_cNF_Exp1.xlsx", "sheet": 0},
     {"path": "metadata_cNF_Exp2.xlsx", "sheet": 1},
 ]
 
-# Patient info (merged into CSVs; optional stamping into per-sample TSVs)
-PATIENT_INFO_TSV         = "patient_info.tsv"
-STAMP_AGE_SEX_IN_FILES   = False              # True = also write Age/Sex into per-sample TSVs
+# Patient info
+PATIENT_INFO_TSV = "patient_info.tsv"
+ADD_AGE_SEX_TO_FILES = False   # If True, write Age/Sex into per-sample TSVs (not needed for these)
 
 # Outputs for step 2
-OUTDIR_ANNOT             = Path("step2_outputs")
-OUTDIR_SPLIT             = Path("step2_split")
+OUTDIR_ANNOT = Path("step2_outputs")
+OUTDIR_SPLIT = Path("step2_split")
 
-# --- Step 3 (old Step 4): packaging/upload
-PACKAGE_DIR              = Path("step3_upload_package")
-DATA_ROOT_NAME           = "Proteomic Data (Cohort 1)"  # (rename of "data")
-UPLOAD_PARENT_SYN_ID     = "syn66351483"                # destination in Synapse
-ENABLE_SYNAPSE_UPLOAD    = True                         # False = dry-run (no uploads)
-SYNAPSE_PAT_ENVVAR       = "SYNAPSE_PAT"                # env var for PAT (optional)
+# --- Step 3: packaging/upload
+PACKAGE_DIR = Path("step3_upload_package")
+DATA_ROOT_NAME = "Proteomics Data by Patient"
+UPLOAD_PARENT_SYN_ID = "syn51301417" # destination in Synapse
+ENABLE_SYNAPSE_UPLOAD = True        # If False, do a dry-run (no uploads, use for debugging)
+SYNAPSE_PAT_ENVVAR = "SYNAPSE_AUTH_TOKEN"  # Env var name for Synapse PAT
 
 # Study-level annotations (includes your studyId change)
 ANNOT_DEFAULTS = {
@@ -80,7 +76,7 @@ DATATYPE_BY_KIND = {
     "phospho-siteid": "DIA Phospho SiteID",
 }
 
-# --- NEW: Fixed Synapse IDs for metadata & patient info (downloaded after Step 1)
+# Data download paths
 SYN_FIXED_DOWNLOAD_DIR = Path("syn_inputs")
 SYN_ID_METADATA_EXP1   = "syn69920463"
 SYN_ID_METADATA_EXP2   = "syn69920464"
@@ -102,7 +98,6 @@ def warn(msg: str):
 # =============================================================================
 
 def syn_login():
-    import synapseclient
     syn = synapseclient.Synapse()
     token = os.environ.get(SYNAPSE_PAT_ENVVAR)
     if token:
@@ -132,32 +127,14 @@ def _is_nan(x):
 # =============================================================================
 
 def fetch_all_files(syn, syn_id: str, download: bool, outdir: Optional[Path]) -> List[dict]:
-    try:
-        from synapseclient.core.exceptions import SynapseHTTPError
-    except Exception:
-        SynapseHTTPError = Exception
-
     records = []
     for item in syn.getChildren(syn_id):
         item_type = item.get('type')
         if item_type in ('org.sagebionetworks.repo.model.FileEntity',
                          'org.sagebionetworks.repo.model.FileHandleAssociate'):
             file_syn_id = item['id']
-            try:
-                entity = syn.get(file_syn_id, downloadFile=download, downloadLocation=str(outdir) if outdir else None)
-            except SynapseHTTPError as e:
-                warn(f"[ERROR] Could not download entity {file_syn_id}: {e}")
-                try:
-                    entity = syn.get(file_syn_id, downloadFile=False)
-                except Exception as e2:
-                    warn(f"[ERROR] Could not fetch entity metadata for {file_syn_id}: {e2}")
-                    continue
-
-            try:
-                ann = syn.get_annotations(file_syn_id)
-            except Exception:
-                ann = {}
-
+            entity = syn.get(file_syn_id, downloadFile=download, downloadLocation=str(outdir) if outdir else None)
+            ann = syn.get_annotations(file_syn_id)
             rec = {
                 "synId": file_syn_id,
                 "name": item.get("name"),
@@ -172,11 +149,9 @@ def fetch_all_files(syn, syn_id: str, download: bool, outdir: Optional[Path]) ->
                 else:
                     rec[f"ann.{key}"] = str(value)
             records.append(rec)
-
         elif item_type == 'org.sagebionetworks.repo.model.Folder':
             log(f"[INFO] Descending into folder {item.get('name')} ({item['id']})")
             records.extend(fetch_all_files(syn, item['id'], download, outdir))
-        # else: quietly skip
     return records
 
 def run_step1_inventory():
@@ -188,10 +163,6 @@ def run_step1_inventory():
     log(f"[STEP1] Collected {len(recs)} file records")
     pd.DataFrame(recs).to_csv(INVENTORY_CSV, index=False)
     log(f"[STEP1] Inventory saved -> {INVENTORY_CSV}")
-
-# =============================================================================
-# NEW: fixed-input downloader (metadata + patient info) — runs after Step 1
-# =============================================================================
 
 def download_fixed_inputs_from_synapse():
     """
@@ -244,7 +215,7 @@ def download_fixed_inputs_from_synapse():
         PATIENT_INFO_TSV = str(local_pinfo)
 
 # =============================================================================
-# Common helpers (dataset extraction & metadata)
+# Helper for part 2
 # =============================================================================
 
 def canonicalize_dataset_name(token: str) -> str:
@@ -278,17 +249,17 @@ def load_metadata(meta_specs: List[dict]) -> Tuple[pd.DataFrame, Dict[str, int],
                 _m[col] = pd.NA
         if "DatasetNameGlobal" not in _m.columns or "DatasetNamePhospho" not in _m.columns:
             raise ValueError(f"{path} (sheet {sheet}) missing DatasetNameGlobal/Phospho columns")
-        _m["DatasetNameGlobal"]  = _m["DatasetNameGlobal"].astype(str).str.strip().map(canonicalize_dataset_name)
+        _m["DatasetNameGlobal"] = _m["DatasetNameGlobal"].astype(str).str.strip().map(canonicalize_dataset_name)
         _m["DatasetNamePhospho"] = _m["DatasetNamePhospho"].astype(str).str.strip().map(canonicalize_dataset_name)
-        _m["Specimen"]    = _m["Specimen"].astype(str).str.strip()
-        _m["Patient"]     = _m["Patient"].astype(str).str.strip()
+        _m["Specimen"] = _m["Specimen"].astype(str).str.strip()
+        _m["Patient"] = _m["Patient"].astype(str).str.strip()
         _m["SampleAlias"] = _m["SampleAlias"].astype(str)
         _m["SampleAlias"] = _m["SampleAlias"].str.strip()
         meta_list.append(_m)
 
     meta = pd.concat(meta_list, ignore_index=True).drop_duplicates()
-    global_map   = dict(zip(meta["DatasetNameGlobal"], meta.index))
-    phospho_map  = dict(zip(meta["DatasetNamePhospho"], meta.index))
+    global_map = dict(zip(meta["DatasetNameGlobal"], meta.index))
+    phospho_map = dict(zip(meta["DatasetNamePhospho"], meta.index))
     return meta, global_map, phospho_map
 
 def derive_sample_and_tumor(meta_row: pd.Series):
@@ -317,7 +288,7 @@ def find_sample_columns(df: pd.DataFrame, treat_first_as_site: bool = False):
     return site_col, sample_cols
 
 # =============================================================================
-# Step 2 (combined): proposed annotations + split + Age/Sex merge
+# Step 2
 # =============================================================================
 
 def annotate_file(file_paths: List[str], lookup_map: Dict[str, int], meta: pd.DataFrame,
@@ -511,7 +482,7 @@ def stamp_age_sex_into_files(manifest_csv: Path, pinfo: pd.DataFrame) -> int:
     return updated
 
 def run_step2_all():
-    """Combined former steps 2 → 3.5."""
+    """Run Step 2: Split by sample, get metadata, create annotations."""
     safe_mkdir(OUTDIR_ANNOT); safe_mkdir(OUTDIR_SPLIT)
 
     meta, global_map, phospho_map = load_metadata(META_FILES)
@@ -574,11 +545,11 @@ def run_step2_all():
     if site_in.exists():
         merge_patient_info(site_in, site_out, pinfo)
 
-    if STAMP_AGE_SEX_IN_FILES:
+    if ADD_AGE_SEX_TO_FILES:
         stamp_age_sex_into_files(man_in, pinfo)
 
 # =============================================================================
-# Step 3 (old Step 4): Package & Upload
+# Step 3: Package & Upload
 # =============================================================================
 
 def read_csv_if_exists(p: Path, usecols=None) -> pd.DataFrame:
@@ -615,7 +586,7 @@ def load_age_sex_maps() -> Dict[str, dict]:
 
     maps: Dict[str, dict] = {}
 
-    # 1) merged-with-patient sources
+    # 1) merged-with-patient sources (data with age and sex already merged in)
     merged_candidates = [
         OUTDIR_ANNOT / "step2_proteomics_proposed_annotations_with_patient.csv",
         OUTDIR_ANNOT / "step2_phospho_proposed_annotations_with_patient.csv",
@@ -647,7 +618,7 @@ def load_age_sex_maps() -> Dict[str, dict]:
                     if ds and ds not in maps:
                         maps[ds] = {"Age": r.get("Age", pd.NA), "Sex": r.get("Sex", pd.NA)}
 
-    # 3) fallback: patient_info via manifest Patient IDs
+    # 3) Get patient_info via manifest Patient IDs
     pi = pd.read_csv(PATIENT_INFO_TSV, sep=None, engine="python") if Path(PATIENT_INFO_TSV).exists() else pd.DataFrame()
     pcol = next((c for c in ["Patient ID", "Patient", "patient", "patient_id"] if c in pi.columns), None)
     pi_map = {}
@@ -710,7 +681,6 @@ def clean_and_reorder_data_tsv(tsv_path: Path):
 def ensure_folder(syn, name: str, parent_id: str, cache: dict) -> str:
     key = (parent_id, name)
     if key in cache: return cache[key]
-    from synapseclient import Folder
     f = Folder(name=name, parent=parent_id)
     f = syn.store(f)
     cache[key] = f["id"]
@@ -841,7 +811,6 @@ def upload_to_synapse(df_upload: pd.DataFrame):
         return
 
     syn = syn_login()
-    from synapseclient import File
     folder_cache = {}
     uploaded = []
 
@@ -855,6 +824,7 @@ def upload_to_synapse(df_upload: pd.DataFrame):
         entity = File(path=str(local_path), parent=syn_folder_id)
         entity = syn.store(entity)
 
+        # All Annotation Data
         ann = {
             "sample": row.get("sample"),
             "tumor": row.get("tumor"),
@@ -889,14 +859,14 @@ def upload_to_synapse(df_upload: pd.DataFrame):
     pd.DataFrame(uploaded).to_csv(out_idx_path, index=False)
 
 # =============================================================================
-# Main — runs all steps by default
+# Main — Run it all
 # =============================================================================
 
+
 def main():
+    """This runs it all. Comment out steps you do not wish to run."""
     # Step 1: inventory/download from your source Synapse folder
     run_step1_inventory()
-
-    # NEW: download fixed inputs (metadata + patient_info) by Synapse ID
     download_fixed_inputs_from_synapse()
 
     # Step 2: process using the freshly downloaded metadata/patient_info
