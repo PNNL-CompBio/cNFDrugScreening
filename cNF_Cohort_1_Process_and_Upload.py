@@ -80,7 +80,7 @@ DATATYPE_BY_KIND = {
 SYN_FIXED_DOWNLOAD_DIR = Path("syn_inputs")
 SYN_ID_METADATA_EXP1   = "syn69920463"
 SYN_ID_METADATA_EXP2   = "syn69920464"
-SYN_ID_PATIENT_INFO    = "syn69920462"
+SYN_ID_PATIENT_INFO    = "syn69931351"
 
 # =============================================================================
 # Logging
