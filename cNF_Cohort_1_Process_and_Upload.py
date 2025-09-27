@@ -58,22 +58,29 @@ UPLOAD_PARENT_SYN_ID = "syn51301417" # destination in Synapse
 ENABLE_SYNAPSE_UPLOAD = True        # If False, do a dry-run (no uploads, use for debugging)
 SYNAPSE_PAT_ENVVAR = "SYNAPSE_AUTH_TOKEN"  # Env var name for Synapse PAT
 
-# Study-level annotations (includes your studyId change)
+# Study-level annotations
 ANNOT_DEFAULTS = {
     "species": "Homo sapiens",
     "studyId": "syn51301409",
     "studyName": "Leveraging patient-derived cutaneous neurofibroma organoid models to identify biomarkers of drug response",
-    "tumorType": "cutaneous neurofibroma (cNF)",
+    "tumorType": "Cutaneous Neurofibroma",
     "initiative": "Biology and Therapeutic Development for Cutaneous Neurofibromas",
     "fundingAgency": "NTAP",
+    "dataType": "mass spectrometry data",
     "disease": "Neurofibromatosis type 1",
     "diagnosis": "Neurofibromatosis type 1",
+    "fileFormat": "tsv",
+    "resourceType": "experimentalData",
+    "assay": "liquid chromatography/tandem mass spectrometry",
+    "platform": "Q Exactive HF",
+    "dataCollectionMode": "DIA",
 }
 
+#These are all just mass spec, dont have to be more specific.
 DATATYPE_BY_KIND = {
-    "proteomics": "DIA Global Proteomics",
-    "phosphoproteomics": "DIA Phosphoproteomics",
-    "phospho-siteid": "DIA Phospho SiteID",
+    "proteomics": "mass spectrometry data",
+    "phosphoproteomics": "mass spectrometry data",
+    "phospho-siteid": "mass spectrometry data",
 }
 
 # Data download paths
@@ -797,6 +804,8 @@ def build_package() -> pd.DataFrame:
     df_upload["dataType"] = df_upload["kind"].map(DATATYPE_BY_KIND).fillna(df_upload["kind"])
     for k, v in ANNOT_DEFAULTS.items():
         df_upload[k] = v
+    df_upload["individualID"] = df_upload["sample"]
+    df_upload["specimenID"] = df_upload["tumor"]
 
     up_manifest = (PACKAGE_DIR / "metadata" / "upload_manifest.csv")
     df_upload.to_csv(up_manifest, index=False)
@@ -840,6 +849,13 @@ def upload_to_synapse(df_upload: pd.DataFrame):
             "fundingAgency": row.get("fundingAgency"),
             "disease": row.get("disease"),
             "diagnosis": row.get("diagnosis"),
+            "fileFormat": row.get("fileFormat"),
+            "resourceType": row.get("resourceType"),
+            "assay": row.get("assay"),
+            "individualID": row.get("individualID"),
+            "specimenID": row.get("specimenID"),
+            "platform": row.get("platform"),
+            "dataCollectionMode": row.get("dataCollectionMode"),
         }
         if ann.get("Age") is not None:
             try: ann["Age"] = int(ann["Age"])
@@ -865,7 +881,7 @@ def upload_to_synapse(df_upload: pd.DataFrame):
 
 def main():
     """This runs it all. Comment out steps you do not wish to run."""
-    # Step 1: inventory/download from your source Synapse folder
+    # Step 1: inventory/download from the source Synapse folder
     run_step1_inventory()
     download_fixed_inputs_from_synapse()
 
