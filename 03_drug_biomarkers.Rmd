@@ -20,11 +20,12 @@ We have already run the previous scripts and stored data on Synapse
 
 
 ```{r pull files}
+source('cNF_helper_code.R')
 
-synLogin()
-fits
-glong
-plong
+fits<-readr::read_tsv(synGet('syn69947322')$path)
+
+glong <- readr::read_csv(synGet('syn69947848')$path)
+plong <- readr::read_csv(synGet('syn69947577')$path)
 
 ```
 
