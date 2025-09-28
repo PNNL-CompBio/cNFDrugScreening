@@ -12,7 +12,6 @@ library(ggplot2)
 library(dplyr)
 library(tidyr)
 
-
 ```
 
 ## Download drug stats
@@ -20,19 +19,22 @@ First we need to downlod the summary stats for each organoid
 ```{r download, warning=FALSE}
 synLogin()
 
-fits<-readr::read_tsv(synGet('syn65471817')$path)
+fits <- readr::read_tsv(synGet('syn65471817')$path)
 
+meta <- readxl::read_xlsx(syn$get('syn65595365')$path) |>
+  tidyr::separate(Specimen,into = c('Patient','Tumor'),sep = '_',
+                  remove = FALSE)
 
-meta<-readxl::read_xlsx(syn$get('syn65595365')$path)|>
-  tidyr::separate(Specimen,into=c('Patient','Tumor'),sep='_',remove = FALSE)
+global <- readr::read_csv(synapser::synGet('syn65599827')$path)
+phospho <- readr::read_csv(synapser::synGet('syn65598472')$path)
+allcors <- readr::read_csv(synapser::synGet('syn66313804')$path)
 
-global<-readr::read_csv(synapser::synGet('syn65599827')$path)
-phospho<-readr::read_csv(synapser::synGet('syn65598472')$path)
+pcols <- c(NF00017='steelblue',NF0021='orange3',NF0019='burlywood3',
+           NF0022='goldenrod',NF0018='olivedrab',NF0020='darkred')
 
-allcors<-readr::read_csv(synapser::synGet('syn66313804')$path)
 ```
 
-now that we have the correlations we can group proteins and phosphosites and do enrihcment.
+now that we have the correlations we can group proteins and phosphosites and do enrichment
 
 ## Global enrichment
 We choose a few pathways and do enrichment on each drug based on unimolar sensitivyt and IC50.
@@ -40,20 +42,23 @@ We choose a few pathways and do enrichment on each drug based on unimolar sensit
 ```{r global enrichment ,warning=FALSE, message=FALSE,error=FALSE}
 library(WebGestaltR)
 
-alldrugs<-unique(allcor$drug)
+alldrugs <- unique(allcor$drug)
 
-alldrugs<-c('Selumetinib','Onalespib','Digoxin','Venetoclax')
-gcors<-allcors|>subset(data=='global')
-go_global<-do.call(rbind,lapply(alldrugs,function(x){
+alldrugs <- c('Selumetinib','Onalespib','Digoxin','Venetoclax')
+gcors <- allcors |> subset(data == 'global')
+go_global <- do.call(rbind,lapply(alldrugs,function(x){
   
-  gprots<-subset(gcors,drug==x)|>
-    dplyr::select(genes='gene',scores='pCor')|>
+  gprots <- subset(gcors,drug == x) |>
+    dplyr::select(genes = 'gene',scores = 'pCor') |>
  as.data.frame()
   print(x)
   
-  
-  try(WebGestaltR(enrichMethod='GSEA',minNum=3,enrichDatabase='geneontology_Biological_Process',fdrThr=1.0,
-              interestGene=gprots,organism='hsapiens',interestGeneType='genesymbol',isOutput=FALSE)|>
+  try(WebGestaltR(enrichMethod='GSEA',
+                  minNum=3,
+                  enrichDatabase='geneontology_Biological_Process',
+                  fdrThr=1.0,
+              interestGene=gprots,organism='hsapiens',
+              interestGeneType='genesymbol',isOutput=FALSE)|>
     mutate(drug=x))
 
 }))
@@ -69,7 +74,9 @@ kegg_global<-do.call(rbind,lapply(alldrugs,function(x){
   print(x)
   
   try(WebGestaltR(enrichMethod='GSEA',enrichDatabase='pathway_KEGG',fdrThr=1.0,
-              interestGene=gprots,minNum=3,organism='hsapiens',interestGeneType='genesymbol',isOutput=FALSE)|>
+              interestGene=gprots,minNum=3,
+              organism='hsapiens',interestGeneType='genesymbol',
+              isOutput=FALSE)|>
     mutate(drug=x))
 
 }))
@@ -86,11 +93,13 @@ Next we can visualize the results
 ```{r plot go/kegg, warning=FALSE}
 
 library(ggplot2)
-paths<-subset(kegg_global,FDR<0.001)
+paths <- subset(kegg_global,FDR<0.001)
 
-subset(kegg_global,description%in%paths$description)|>
-  subset(FDR<0.001)|>
-  ggplot(aes(x=description,y=drug,size=1-FDR,col=normalizedEnrichmentScore))+geom_point()+coord_flip()
+subset(kegg_global,description%in%paths$description) |>
+  subset(FDR<0.001) |>
+  ggplot(aes(x=description,y=drug,
+             size=1-FDR,col=normalizedEnrichmentScore)) + 
+  geom_point() + coord_flip()
 
 paths<-subset(go_global,FDR<0.0001)
 

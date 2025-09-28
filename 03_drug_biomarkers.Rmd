@@ -15,156 +15,25 @@ library(tidyr)
 
 ```
 
-## Download drug stats
-First we need to downlod the summary stats for each organoid 
-```{r download, warning=FALSE}
+## Pull processed files from previous markdowns
+We have already run the previous scripts and stored data on Synapse
+
+
+```{r pull files}
+
 synLogin()
-
-fits<-readr::read_tsv(synGet('syn65471817')$path)
-
-
-meta<-readxl::read_xlsx(syn$get('syn65595365')$path)|>
-  tidyr::separate(Specimen,into=c('Patient','Tumor'),sep='_',remove = FALSE)
-
-
-pcols <- c(NF0017='steelblue',NF0021='orange3',NF0019='orchid4',
-           NF0022='goldenrod',NF0018='olivedrab',NF0020='darkred', 
-           NF0023='darkgrey')
+fits
+glong
+plong
 
 ```
-
-## Plot data from drug
-
-Here we can write a function that plots data for a drug across patients
-
-```{r summary, echo=FALSE}
-
- fits|>subset(dose_response_metric=='uM_viability')|>ggplot(aes(x=dose_response_value,y=improve_sample_id,fill=improve_sample_id,alpha=0.5))+ggridges::geom_density_ridges()+ggtitle('Viabilities across samples')
-
-##we can also plot samples according to their drug response
-pcs = fits|>subset(dose_response_metric=='uM_viability')|>
-  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
-  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fill=1.0)|>
-  tibble::column_to_rownames('improve_sample_id')|>prcomp()
-
-pcs$x|>as.data.frame()|>tibble::rownames_to_column('Specimen')|>
-  left_join(meta)|>
-  dplyr::select(PC1,PC2,Patient,Specimen)|>
-  distinct()|>
-  ggplot(aes(x=PC1,y=PC2,col=Patient,label=Specimen))+geom_point()+
-  ggrepel::geom_label_repel()+
-  ggplot2::scale_color_manual(values=pcols)
-
-```
-
-## Now compare to proteomics
-
-We created a metadata file with the aliquot number that is embedded in the file name/columns, and teased it out to create two long tables - one for global and one for phospho.
-
-```{r compare to proteomics,warning=FALSE}
-
-
-
-
-phospho<- read.table(syn$get('syn65467785')$path)|>
-  tibble::rownames_to_column('site')
-
-##logtransform##median transform
-
-pmat<-apply(log2(phospho[,2:ncol(phospho)]),2,function(x) x-median(x,na.rm=T))|>
-  as.data.frame()|>
-  mutate(site=phospho$site)
-
-plong<-pmat|>
-  tidyr::pivot_longer(1:(ncol(pmat)-1),names_to='fname',values_to='abundance')|>
-  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9]))|>
-  mutate(aliquot=as.double(aliquot))|>
-  group_by(site,fname,aliquot)|>
-  summarize(meanAbundance=mean(abundance))|>
-  left_join(meta)
-
-##save to file
-readr::write_csv(plong,file='log2normMedCenteredPhospho.csv')
-syn$store(File('log2normMedCenteredPhospho.csv',parentId='syn51301417'))
-         
-
-plong$meanAbundance[which(!is.finite(plong$meanAbundance))]<-0
-ppcs<-plong|>ungroup()|>dplyr::select(Specimen,meanAbundance,site)|>
-  subset(!is.na(site))|>
-  subset(!is.na(meanAbundance))|>
-  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',values_fn=mean,values_fill=0)|>
-  tibble::column_to_rownames('site')|>t()|>
-  prcomp()
-
-pplot<-ppcs$x|>
-  as.data.frame()|>
-  dplyr::select(PC1,PC2)|>
-  tibble::rownames_to_column('Specimen')|>
-  left_join(meta)|>
-  dplyr::select(PC1,PC2,Specimen,Patient)|>
-  distinct()|>
-  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Phospho samples")+
-  ggplot2::scale_color_manual(values=pcols)
-
-pplot
-ggsave('phosphoPCA.pdf')
-global<-readr::read_tsv(syn$get('syn64906445')$path)
-
-##logtransform, medina transform
-
-gmat<-apply(log2(global[,6:ncol(global)]),2,function(x) x-median(x,na.rm=T))
-
-glong<-gmat|>
-  as.data.frame()|>
-  mutate(Genes=global$Genes)|>
-  tidyr::pivot_longer(1:ncol(gmat),names_to='fname',values_to='abundance')|>
-  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9]))|>
-  mutate(aliquot=as.double(aliquot))|>
-  group_by(Genes,fname,aliquot)|>
-  summarize(meanAbundance=mean(abundance))|>
-  left_join(meta)
-         
-
-#dupes<-global|>group_by(Genes)|>summarize(numIso=n())|>
-#  subset(numIso>1)
-
-readr::write_csv(plong,file='log2normMedCenteredGlobal.csv')
-syn$store(File('log2normMedCenteredGlobal.csv',parentId='syn51301417'))
-         
-#ma<-mean(glong$abundance,na.rm=T)
-glong$meanAbundance[which(!is.finite(glong$meanAbundance))]<-0
-
-gpcs<-glong|>ungroup()|>
-  dplyr::select(Specimen,meanAbundance,Genes)|>
-  subset(!is.na(Genes))|>
-  subset(!is.na(meanAbundance))|>
-  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',values_fn=mean,values_fill=0)|>
-  tibble::column_to_rownames('Genes')|>t()|>
-  prcomp()
-
-gplot<-gpcs$x|>
-  as.data.frame()|>
-  dplyr::select(PC1,PC2)|>
-  tibble::rownames_to_column('Specimen')|>
-  left_join(meta)|>
-    dplyr::select(PC1,PC2,Specimen,Patient)|>
-  distinct()|>
-  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+
-  geom_point()+ggrepel::geom_label_repel()+ggtitle("Global samples")+
-  scale_color_manual(values=pcols)
-
-gplot
-
-ggsave('globalPCA.pdf')
-
-```
-Now we have the global and phospho and drug data for anumber of samples. 
 
 ## Format protein data to collect correlation values
 
 Do simple correlations to identify putative trends in the data.
 
 ```{r make matrices of proteins}
+
 
 shared<-intersect(fits$improve_sample_id,glong$Specimen)
 print(paste('Found',length(shared),'shared samples'))
@@ -289,8 +158,8 @@ plotCors <- function(features,druglist,dataType='global'){
 
 druglist<-c('Onalespib')
 features<-subset(allcor,drug%in%druglist)|>
-  subset(fdr<0.05)|>
-  subset(data=='global')
+  subset(fdr<0.1)|>
+  subset(data=='phospho')
 
 plotCors(rename(features,feature='gene'),druglist)
 ggsave('onalespibFDR0.05Cors.pdf',height=5)
