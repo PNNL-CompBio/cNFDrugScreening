@@ -26,6 +26,11 @@ fits<-readr::read_tsv(synGet('syn65471817')$path)
 meta<-readxl::read_xlsx(syn$get('syn65595365')$path)|>
   tidyr::separate(Specimen,into=c('Patient','Tumor'),sep='_',remove = FALSE)
 
+
+pcols <- c(NF0017='steelblue',NF0021='orange3',NF0019='orchid4',
+           NF0022='goldenrod',NF0018='olivedrab',NF0020='darkred', 
+           NF0023='darkgrey')
+
 ```
 
 ## Plot data from drug
@@ -46,7 +51,9 @@ pcs$x|>as.data.frame()|>tibble::rownames_to_column('Specimen')|>
   left_join(meta)|>
   dplyr::select(PC1,PC2,Patient,Specimen)|>
   distinct()|>
-  ggplot(aes(x=PC1,y=PC2,col=Patient,label=Specimen))+geom_point()+ggrepel::geom_label_repel()
+  ggplot(aes(x=PC1,y=PC2,col=Patient,label=Specimen))+geom_point()+
+  ggrepel::geom_label_repel()+
+  ggplot2::scale_color_manual(values=pcols)
 
 ```
 
@@ -96,7 +103,8 @@ pplot<-ppcs$x|>
   left_join(meta)|>
   dplyr::select(PC1,PC2,Specimen,Patient)|>
   distinct()|>
-  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Phospho samples")
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Phospho samples")+
+  ggplot2::scale_color_manual(values=pcols)
 
 pplot
 ggsave('phosphoPCA.pdf')
@@ -141,7 +149,9 @@ gplot<-gpcs$x|>
   left_join(meta)|>
     dplyr::select(PC1,PC2,Specimen,Patient)|>
   distinct()|>
-  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Global samples")
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient))+
+  geom_point()+ggrepel::geom_label_repel()+ggtitle("Global samples")+
+  scale_color_manual(values=pcols)
 
 gplot
 
@@ -240,21 +250,21 @@ readr::write_csv(allcor,'globalPhosphoDrugCors.csv')
 synapser::synStore(synapser::File('globalPhosphoDrugCors.csv',parentId='syn66313784'))
 ##lets count the correlations and plot
 
-corsummary<-allcor|>subset(fdr<0.1)|>
+corsummary<-allcor|>subset(fdr<0.05)|>
   group_by(drug,data,direction)|>
   summarize(features=n(),meanCor=mean(pCor))
 corsummary|>
   subset(features>1)|>
   ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
 
-ggsave('correlatedFeaturesFDR0.1.pdf')
+ggsave('correlatedFeaturesFDR0.05.pdf')
 
 ```
 Now that we have the correlations we can cherry pick some examples to showcase
 
 ```{r plot cors}
 
-plotCors<-function(features,druglist,dataType='global'){
+plotCors <- function(features,druglist,dataType='global'){
   ##subset a list of features and drugs and plot those in a graph
   require(ggplot2)
   if(dataType=='global'){
@@ -270,16 +280,20 @@ plotCors<-function(features,druglist,dataType='global'){
   
   ftab<-features|>left_join(ptab)|>left_join(dtab)|>
     subset(!is.na(Drug))
-  ftab|>ggplot(aes(x=meanAbundance,y=dose_response_value,col=Patient,size=2))+geom_point()+facet_grid(feature~Drug)
+  
+  ftab|>ggplot(aes(x=meanAbundance,y=dose_response_value,col=Patient,size=1))+
+    geom_point()+
+    facet_grid(feature~Drug)+
+    scale_color_manual(values=pcols)
 }
 
-druglist<-c('Onalespib','Selumetinib')
+druglist<-c('Onalespib')
 features<-subset(allcor,drug%in%druglist)|>
   subset(fdr<0.05)|>
   subset(data=='global')
 
 plotCors(rename(features,feature='gene'),druglist)
-ggsave('onalespibSelumetinibFDR0.05Cors.pdf')
+ggsave('onalespibFDR0.05Cors.pdf',height=5)
 
 ```
 
@@ -291,9 +305,9 @@ hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
 print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
 
-plotCors(rename(cor_hsps,feature='gene'),c('Onalespib','Selumetinib'))
+plotCors(rename(cor_hsps,feature='gene'),c('Onalespib'))
 
-ggsave('hspCorsOnaSelu.pdf',width=8,height=14)
+ggsave('hspCorsOna.pdf',width=8,height=14)
 
 hspp<-unique(plong$site[grep('^HSP',plong$site)])
 cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.01)
@@ -375,7 +389,9 @@ corsummary<-allcor|>subset(fdr<0.1)|>
 
 corsummary|>
   #subset(features>1)|>
-  ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
+  ggplot(aes(x=data,y=features,fill=drug))+
+  facet_grid(~direction)+
+  geom_bar(position='dodge',stat='identity')
 
 ```
 
@@ -396,7 +412,7 @@ features<-subset(allcor,drug%in%druglist)|>
   subset(fdr<0.1)|>
   subset(data=='phospho')
 
-plotCors(rename(features,feature='gene'),druglist,data='phospho')
+#plotCors(rename(features,feature='gene'),druglist,data='phospho')
 
 
 
@@ -408,12 +424,14 @@ Now we can check the HSP proteins directly
 hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 
 cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
+
 print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
 
-plotCors(cor_hsps$gene,'Onalespib')
+plotCors(rename(cor_hsps,feature='gene'),'Onalespib')
 
 hspp<-unique(plong$site[grep('^HSP',plong$site)])
 cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.1)
+
 print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
 ```
 
@@ -496,11 +514,12 @@ print(corsummary)
 ```{r HSP correlation again}
 hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 
-cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
+cor_hsps<-subset(allcor,gene%in%hsps)|>s
+ubset(drug=='Onalespib')|>subset(corp<0.05)
 print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
 cor_hsps
 
-plotCors(cor_hsps$gene,'Onalespib')
+plotCors(rename(cor_hsps, feature='gene'),'Onalespib')
 
 hspp<-unique(plong$site[grep('^HSP',plong$site)])
 cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.1)

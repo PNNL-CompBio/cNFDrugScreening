@@ -9,7 +9,7 @@ import subprocess
 syn = sc.login()
 ##this is a pain, need to move to file
 
-filelist = syn.tableQuery("select id,individualID,specimenID from syn51301431 where dataType='drugScreen'").asDataFrame()
+filelist = syn.tableQuery("select id,individualID,specimenID from syn51301431 where dataType='drug screen'").asDataFrame()
 
 
 ###pull files
@@ -54,7 +54,7 @@ fulltab.to_csv('drug_response.tsv',sep='\t')
 
 
 ##fit curve
-script='https://raw.githubusercontent.com/PNNL-CompBio/coderdata/refs/heads/main/build/utils/fit_curve.py'
+script='https://raw.githubusercontent.com/PNNL-CompBio/coderdata/refs/heads/main/coderbuild/utils/fit_curve.py'
 subprocess.run(['wget',script])
 subprocess.run(['python','fit_curve.py','--input','drug_response.tsv','--output','cnfDrugOutput'])
 
@@ -81,10 +81,10 @@ stab = stab[curve_cols]
 newtab =pd.concat([otab,stab])
 
 ##rename file
-newtab.to_csv('cohort1_curves.tsv',sep='\t',index=False)
+newtab.to_csv('cohort1_2_curves.tsv',sep='\t',index=False)
 
 ##now add in single-point drug measurements
 
 #store on synapse
-syn.store(sc.File('cohort1_curves.tsv',parentId='syn65471813'))
+syn.store(sc.File('cohort1_2_curves.tsv',parentId='syn65471813'))
 
