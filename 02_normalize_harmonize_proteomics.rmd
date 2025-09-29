@@ -1,0 +1,206 @@
+---
+title: "Reformat and process proteomics"
+author: "Sara Gosline"
+date: "2025-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+source('cNF_helper_code.R')
+
+```
+
+## Now compare to proteomics
+
+We created a metadata file with the aliquot number that is embedded in the file name/columns, and teased it out to create two long tables - one for global and one for phospho.
+
+```{r compare to proteomics,warning=FALSE}
+
+
+
+##cohort 1 phospho
+
+phospho1<- read.table(syn$get('syn65467785')$path)|>
+  tibble::rownames_to_column('site')
+
+
+##cohort 2 phospho
+phospho2 <- read.table(syn$get('syn69947351')$path,sep='\t',fill=NA,header=T) |>
+  subset(!is.na(`Gene.Names`)) |>
+  subset(Gene.Names!='')|>
+  mutate(lsite=tolower(Residue))|>
+  tidyr::unite(c(Residue,Site,lsite),col='site',sep='') |>
+  tidyr::unite(c(`Gene.Names`,site),col='site',sep='-')
+ 
+
+
+##logtransform##median transform
+
+pmat1<-apply(log2(phospho1[,2:ncol(phospho1)]),2,function(x) 0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T))|>
+  as.data.frame()|>
+  mutate(site=phospho1$site)
+
+
+##for some reason the second cohort has more missing values? 
+tm <- which(apply(phospho2[,5:ncol(phospho2)],1,function(x) length(which(x==0))/length(x)) > 0.5)
+phospho2 <- phospho2[-tm,]
+
+pmat2<-apply(log2(phospho2[,5:ncol(phospho2)]),2,function(x) 0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T))|>
+  as.data.frame()|>
+  mutate(site=phospho2$site)
+
+
+
+plong1<-pmat1|>
+  tidyr::pivot_longer(1:(ncol(pmat1)-1),names_to='fname',values_to='abundance')|>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9]))|>
+  mutate(aliquot=as.double(aliquot))|>
+  mutate(cohort=1)|>
+  group_by(site,fname,aliquot,cohort)|>
+  summarize(meanAbundance=mean(abundance))|>
+  left_join(meta)
+
+
+readr::write_csv(plong1,file='log2normMedCenteredPhospho.csv')
+syn$store(File('log2normMedCenteredPhospho.csv',parentId='syn51301417'))
+
+plong2<-pmat2|>
+  tidyr::pivot_longer(1:(ncol(pmat2)-1),names_to='fname',values_to='abundance') |>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9])) |>
+  mutate(aliquot=as.double(aliquot)) |>
+  mutate(cohort=2) |>
+  group_by(site,fname,aliquot,cohort) |>
+  summarize(meanAbundance=mean(abundance)) |>
+  left_join(meta)
+
+
+plong <- rbind(plong1,plong2)
+##save to file
+readr::write_csv(plong,file='log2normMedCenteredPhospho_cohort12.csv')
+syn$store(File('log2normMedCenteredPhospho_cohort12.csv',parentId='syn51301423'))
+         
+compsites <- plong|>group_by(site)|>
+  summarize(spec = n_distinct(Specimen))|>
+  subset(spec==31)
+
+plong$meanAbundance[which(!is.finite(plong$meanAbundance))]<-0
+
+ppcs<-plong|>ungroup()|>dplyr::select(Specimen,meanAbundance,site)|>
+  subset(site%in%compsites$site)|>
+  subset(!is.na(site))|>
+  subset(!is.na(meanAbundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',values_fn=mean,values_fill=0)|>
+  tibble::column_to_rownames('site')|>t()|>
+  prcomp()
+
+pplot<-ppcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2)|>
+  tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+  dplyr::select(PC1,PC2,Specimen,Patient,cohort)|>
+  mutate(cohort=as.factor(cohort))|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+geom_point()+ggrepel::geom_label_repel()+ggtitle("Phospho samples")+
+  ggplot2::scale_color_manual(values=pcols)
+
+ph<- ggplot(plong,aes(x=meanAbundance,fill=as.factor(cohort)))+geom_histogram()
+
+cowplot::plot_grid(ph,pplot)
+ggsave('cNFPhosphoQC.png',width=10)
+
+pplot
+ggsave('phosphoPCA.pdf')
+```
+
+Now we have processed the phospho (or still working on it) and can compare to the gloabl
+
+
+
+```{r global}
+####now process global
+#global1<-readr::read_tsv(syn$get('syn64906445')$path)
+global1 <- readr::read_tsv(syn$get('syn69947355')$path)
+##logtransform, medina transform
+
+gmat1<-apply(log2(global1[,5:ncol(global1)]),2,function(x) 0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T))
+
+glong1<-gmat1|>
+  as.data.frame()|>
+  mutate(Genes=global1$Genes)|>
+  tidyr::pivot_longer(1:ncol(gmat1),names_to='fname',values_to='abundance')|>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[6]))|>
+  mutate(aliquot=as.double(aliquot))|>
+  mutate(cohort=1)|>
+  group_by(Genes,fname,aliquot,cohort)|>
+  summarize(meanAbundance=mean(abundance))|>
+  left_join(meta)
+         
+
+readr::write_csv(glong1,file='log2normMedCenteredGlobal.csv')
+syn$store(File('log2normMedCenteredGlobal.csv',parentId='syn51301417'))
+
+global2<-readr::read_tsv(syn$get('syn69947352')$path)
+
+gmat2<-apply(log2(global2[,5:ncol(global2)]),2,function(x)0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T))
+
+glong2<-gmat2|>
+  as.data.frame()|>
+  mutate(Genes=global2$Genes)|>
+  tidyr::pivot_longer(1:ncol(gmat2),names_to='fname',values_to='abundance')|>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[7]))|>
+  mutate(aliquot=as.double(aliquot))|>
+  mutate(cohort=2)|>
+  group_by(Genes,fname,aliquot,cohort)|>
+  summarize(meanAbundance=mean(abundance))|>
+  left_join(meta)
+
+#dupes<-global|>group_by(Genes)|>summarize(numIso=n())|>
+#  subset(numIso>1)
+
+glong <- rbind(glong1,glong2)
+
+readr::write_csv(glong,file='log2normMedCenteredGlobal_cohort12.csv')
+syn$store(File('log2normMedCenteredGlobal_cohort12.csv',parentId='syn51301423'))
+
+#ma<-mean(glong$abundance,na.rm=T)
+glong$meanAbundance[which(!is.finite(glong$meanAbundance))]<-0
+
+gpcs<-glong|>ungroup()|>
+  dplyr::select(Specimen,meanAbundance,Genes)|>
+  subset(!is.na(Genes))|>
+  subset(!is.na(meanAbundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',values_fn=mean,values_fill=0)|>
+  tibble::column_to_rownames('Genes')|>t()|>
+  prcomp()
+
+gplot<-gpcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2)|>
+  tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+    dplyr::select(PC1,PC2,Specimen,Patient,cohort)|>
+    mutate(cohort=as.factor(cohort))|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+
+  geom_point()+ggrepel::geom_label_repel()+ggtitle("Global samples")+
+  scale_color_manual(values=pcols)
+
+
+hplot <- ggplot(glong,aes(x=meanAbundance,fill=as.factor(cohort)))+geom_histogram()
+     
+
+cowplot::plot_grid(hplot,gplot)
+ggsave('cNFGlobalQC.png',width=10)
+
+  
+gplot
+
+ggsave('globalPCA.pdf')
+
+```
+Now we have the global and phospho and drug data for anumber of samples. 
