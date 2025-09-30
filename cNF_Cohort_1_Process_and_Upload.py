@@ -34,8 +34,8 @@ INVENTORY_CSV = Path("step1_inventory_existing_files.csv")
 
 # --- Step 2: inputs
 PROTEOMICS_FILES = ["step1_downloads/DIA_Global_DiaNN_Results.tsv", "step1_downloads/DIA_Global_FP_Results.tsv"]
-PHOSPHO_FILES = ["step1_downloads/DIA_Phospho_FP_Results.tsv"]
-PHOSPHO_SITEID_FILE = "step1_downloads/DIA_Phospho_FP_Results_SiteID.txt"
+# PHOSPHO_FILES = ["step1_downloads/DIA_Phospho_FP_Results.tsv"]
+PHOSPHO_SITEID_FILE = "step1_downloads/DIA_Phospho_DiaNN_phosphosites_90_EXP1.tsv"
 
 # Metadata
 META_FILES = [
@@ -72,7 +72,7 @@ ANNOT_DEFAULTS = {
     "fileFormat": "tsv",
     "resourceType": "experimentalData",
     "assay": "liquid chromatography/tandem mass spectrometry",
-    "platform": "Q Exactive HF",
+    "platform": "Q Exative HF",
     "dataCollectionMode": "DIA",
 }
 
@@ -356,11 +356,13 @@ def write_per_sample_matrix(path, kind, outdir, id_priority, meta, lookup_map, m
             meta_row = pd.Series({})
         sample, tumor = derive_sample_and_tumor(meta_row) if not meta_row.empty else (None, None)
 
+        # Build per-sample table (no 'tumor' column in file; sample becomes "sample-tumor" if tumor present)
         sub = df[[id_col, col]].rename(columns={id_col: "feature_id", col: "value"})
-        sub["sample"] = sample
-        sub["tumor"]  = tumor
+        combined_sample = f"{sample}-{tumor}" if (sample and tumor) else (sample or (tumor or None))
+        sub.insert(0, "sample", combined_sample)
         sub.to_csv(out, sep="\t", index=False)
 
+        # Manifest/annotations remain unchanged (keep original separate sample & tumor)
         if ds in lookup_map:
             manifest_rows.append({
                 "kind": kind,
@@ -388,6 +390,7 @@ def write_per_sample_siteid(path, outdir, meta, lookup_map, manifest_rows):
     bname = os.path.splitext(os.path.basename(path))[0]
     odir = outdir / "phospho-siteid" / bname
     safe_mkdir(odir)
+
     for col in sample_cols:
         ds = extract_dataset_name_loose(col) or "unknown_dataset"
         out = odir / f"{ds}.phospho_siteid.tsv"
@@ -396,10 +399,14 @@ def write_per_sample_siteid(path, outdir, meta, lookup_map, manifest_rows):
         else:
             meta_row = pd.Series({})
         sample, tumor = derive_sample_and_tumor(meta_row) if not meta_row.empty else (None, None)
+
+        # Build per-sample table (no 'tumor' column in file; sample becomes "sample-tumor" if tumor present)
         sub = df[[site_col, col]].rename(columns={site_col: "site_id", col: "intensity"})
-        sub["sample"] = sample
-        sub["tumor"]  = tumor
+        combined_sample = f"{sample}-{tumor}" if (sample and tumor) else (sample or (tumor or None))
+        sub.insert(0, "sample", combined_sample)
         sub.to_csv(out, sep="\t", index=False)
+
+        # Manifest/annotations remain unchanged
         if ds in lookup_map:
             manifest_rows.append({
                 "kind": "phospho-siteid",
@@ -414,6 +421,7 @@ def write_per_sample_siteid(path, outdir, meta, lookup_map, manifest_rows):
                 "Description": meta_row.get("Description"),
             })
     log(f"[phospho-siteid] Wrote {len(sample_cols)} files -> {odir}")
+
 
 def load_patient_info(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t")
@@ -496,21 +504,21 @@ def run_step2_all():
 
     # Proposed annotations
     df_prot = annotate_file(PROTEOMICS_FILES, global_map,  meta, kind="proteomics",        siteid=False)
-    df_phos = annotate_file(PHOSPHO_FILES,    phospho_map, meta, kind="phosphoproteomics", siteid=False)
+    # df_phos = annotate_file(PHOSPHO_FILES,    phospho_map, meta, kind="phosphoproteomics", siteid=False)
     df_site = annotate_file([PHOSPHO_SITEID_FILE], phospho_map, meta, kind="phospho-siteid", siteid=True)
 
     df_prot.to_csv(OUTDIR_ANNOT / "step2_proteomics_proposed_annotations.csv", index=False)
-    df_phos.to_csv(OUTDIR_ANNOT / "step2_phospho_proposed_annotations.csv", index=False)
+    # df_phos.to_csv(OUTDIR_ANNOT / "step2_phospho_proposed_annotations.csv", index=False)
     df_site.to_csv(OUTDIR_ANNOT / "step2_phospho_siteid_proposed_annotations.csv", index=False)
 
     # Missing report
     missing_prot = set(global_map)  - set(df_prot["dataset_name"]) if not df_prot.empty else set(global_map)
-    missing_phos = set(phospho_map) - set(df_phos["dataset_name"]) if not df_phos.empty else set(phospho_map)
+    # missing_phos = set(phospho_map) - set(df_phos["dataset_name"]) if not df_phos.empty else set(phospho_map)
     missing_site = set(phospho_map) - set(df_site["dataset_name"]) if not df_site.empty else set(phospho_map)
     with open(OUTDIR_ANNOT / "step2_missing_fields_summary.csv", "w") as f:
         f.write("missing_type,dataset_name\n")
         for ds in sorted(missing_prot): f.write(f"proteomics,{ds}\n")
-        for ds in sorted(missing_phos): f.write(f"phosphoproteomics,{ds}\n")
+        # for ds in sorted(missing_phos): f.write(f"phosphoproteomics,{ds}\n")
         for ds in sorted(missing_site): f.write(f"phospho-siteid,{ds}\n")
 
     # Split per-sample + manifest
@@ -521,13 +529,13 @@ def run_step2_all():
             id_priority=["Genes", "Protein.Group"], meta=meta, lookup_map=global_map,
             manifest_rows=manifest_rows
         )
-    for p in PHOSPHO_FILES:
-        write_per_sample_matrix(
-            p, kind="phosphoproteomics", outdir=OUTDIR_SPLIT,
-            id_priority=["Modified.Sequence", "Stripped.Sequence", "Precursor.Id"],
-            meta=meta, lookup_map=phospho_map,
-            manifest_rows=manifest_rows
-        )
+    # for p in PHOSPHO_FILES:
+    #     write_per_sample_matrix(
+    #         p, kind="phosphoproteomics", outdir=OUTDIR_SPLIT,
+    #         id_priority=["Modified.Sequence", "Stripped.Sequence", "Precursor.Id"],
+    #         meta=meta, lookup_map=phospho_map,
+    #         manifest_rows=manifest_rows
+    #     )
     if os.path.exists(PHOSPHO_SITEID_FILE):
         write_per_sample_siteid(PHOSPHO_SITEID_FILE, OUTDIR_SPLIT, meta, phospho_map, manifest_rows=manifest_rows)
 
