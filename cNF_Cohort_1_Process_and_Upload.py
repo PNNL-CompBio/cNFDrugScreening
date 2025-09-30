@@ -20,7 +20,7 @@ import synapseclient
 from synapseclient import Folder,File
 
 # =============================================================================
-# CONFIG — edit here if needed (no CLI)
+# CONFIGURATION
 # =============================================================================
 
 # Verbosity
@@ -33,7 +33,7 @@ DOWNLOAD_DIR = Path("step1_downloads")
 INVENTORY_CSV = Path("step1_inventory_existing_files.csv")
 
 # --- Step 2: inputs
-PROTEOMICS_FILES = ["step1_downloads/DIA_Global_DiaNN_Results.tsv", "step1_downloads/DIA_Global_FP_Results.tsv"]
+PROTEOMICS_FILES = ["step1_downloads/Aggregation_report_DiaNN_matrix_exp1.tsv"]
 # PHOSPHO_FILES = ["step1_downloads/DIA_Phospho_FP_Results.tsv"]
 PHOSPHO_SITEID_FILE = "step1_downloads/DIA_Phospho_DiaNN_phosphosites_90_EXP1.tsv"
 
@@ -226,24 +226,35 @@ def download_fixed_inputs_from_synapse():
 # =============================================================================
 
 def canonicalize_dataset_name(token: str) -> str:
+    # Strip common raw formats/extensions
     token = token.replace(".raw", "")
-    token = re.sub(r"(BEHCoA)[\.-_](\d{2})[\.-_](\d{2})[\.-_](\d{2})", r"BEHCoA-\2-\3-\4", token, flags=re.I)
+    token = token.replace(".mzML", "")
+    token = token.replace(".d", "")
+    token = re.sub(r"(BEHCoA)[\.-_](\d{2})[\.-_](\d{2})[\.-_](\d{2})",
+                   r"BEHCoA-\2-\3-\4", token, flags=re.IGNORECASE)
     return token.strip("._- ")
+
 
 def extract_dataset_name_loose(colname: str):
     if not isinstance(colname, str):
         return None
-    m = re.search(r"(cNF[^\\/\t\n\r]*?)(?:\.raw\b|$)", colname, flags=re.IGNORECASE)
+
+    # Accept .raw / .mzML / .d or no extension
+    m = re.search(r"(cNF[^\\/\t\n\r]*?)(?:\.(?:raw|mzML|d)\b|$)", colname, flags=re.IGNORECASE)
     if not m:
         return None
     token = m.group(1)
+
+    # Prefer a precise capture up to BEHCoA token
     m2 = re.search(
         r"(cNF[^\\/\t\n\r]*?DIA_[GP]_\d+_[^_]*?_BEHCoA[.\-_]\d{2}[.\-_]\d{2}[.\-_]\d{2})",
-        token,
-        flags=re.IGNORECASE,
+        token, flags=re.IGNORECASE
     )
     token = m2.group(1) if m2 else token
+
     return canonicalize_dataset_name(token)
+
+
 
 def load_metadata(meta_specs: List[dict]) -> Tuple[pd.DataFrame, Dict[str, int], Dict[str, int]]:
     meta_list = []
@@ -358,7 +369,23 @@ def write_per_sample_matrix(path, kind, outdir, id_priority, meta, lookup_map, m
 
         # Build per-sample table (no 'tumor' column in file; sample becomes "sample-tumor" if tumor present)
         sub = df[[id_col, col]].rename(columns={id_col: "feature_id", col: "value"})
-        combined_sample = f"{sample}-{tumor}" if (sample and tumor) else (sample or (tumor or None))
+
+        fallback_sample = None
+        if isinstance(meta_row, pd.Series) and not meta_row.empty:
+            spec = (meta_row.get("Specimen") or "")
+            m_nf = re.search(r"\b(NF\d{4,})\b", spec)
+            if m_nf:
+                fallback_sample = m_nf.group(1)
+        if not fallback_sample:
+            m_nf2 = re.search(r"\b(NF\d{4,})\b", ds or "")
+            if m_nf2:
+                fallback_sample = m_nf2.group(1)
+
+        combined_sample = (
+            f"{sample}-{tumor}" if (sample and tumor)
+            else (sample or (tumor or fallback_sample))
+        )
+
         sub.insert(0, "sample", combined_sample)
         sub.to_csv(out, sep="\t", index=False)
 
@@ -402,7 +429,23 @@ def write_per_sample_siteid(path, outdir, meta, lookup_map, manifest_rows):
 
         # Build per-sample table (no 'tumor' column in file; sample becomes "sample-tumor" if tumor present)
         sub = df[[site_col, col]].rename(columns={site_col: "site_id", col: "intensity"})
-        combined_sample = f"{sample}-{tumor}" if (sample and tumor) else (sample or (tumor or None))
+
+        fallback_sample = None
+        if isinstance(meta_row, pd.Series) and not meta_row.empty:
+            spec = (meta_row.get("Specimen") or "")
+            m_nf = re.search(r"\b(NF\d{4,})\b", spec)
+            if m_nf:
+                fallback_sample = m_nf.group(1)
+        if not fallback_sample:
+            m_nf2 = re.search(r"\b(NF\d{4,})\b", ds or "")
+            if m_nf2:
+                fallback_sample = m_nf2.group(1)
+
+        combined_sample = (
+            f"{sample}-{tumor}" if (sample and tumor)
+            else (sample or (tumor or fallback_sample))
+        )
+
         sub.insert(0, "sample", combined_sample)
         sub.to_csv(out, sep="\t", index=False)
 
