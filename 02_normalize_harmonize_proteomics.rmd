@@ -1,0 +1,431 @@
+---
+title: "Reformat and process proteomics"
+author: "Sara Gosline"
+date: "2025-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+source('cNF_helper_code.R')
+
+```
+
+## Normalize phospho-proteomics
+
+We now have phospho proteomics from two cohorts. Here I'm trying to collect data from both and normalize but am clearly missing something. I do the following:
+
+1. replace all zero values with NA to avoid skewing normalization
+2. remove any features that are absent from >50% of the samples
+3. take the log of the data, then take a modified z score
+
+Each dataset is done individually then combined at the end. There is a clear batch effect. 
+
+### Cohort 1 phospho
+
+We start with the cohort 1 phospho data here. 
+
+```{r compare to proteomics,warning=FALSE}
+
+##cohort 1 phospho
+##first we read in file, and get site info
+phospho1<- read.table(syn$get('syn69963552')$path,sep='\t',fill=NA,header=T,quote='"') |>
+  subset(!is.na(`Gene.Names`)) |>
+  subset(Gene.Names!='') |>
+  mutate(lsite=tolower(Residue)) |>
+  tidyr::unite(c(Residue,Site,lsite),col='site',sep='') |>
+  tidyr::unite(c(`Gene.Names`,site),col='site',sep='-') |>
+  as.data.frame()
+
+phospho1[which(phospho1==0,arr.ind=TRUE)]<-NA
+
+pfnames1 <- data.frame(fname=colnames(phospho1)[5:ncol(phospho1)])|>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[8]))|>
+  mutate(aliquot=as.double(aliquot))|>
+  mutate(cohort=1)
+ 
+##logtransform##median transform
+pzeros<-which(apply(phospho1[,5:ncol(phospho1)],1,function(x)
+    length(which(is.na(x)))/length(x) < 0.5))
+
+pmat1<-apply(0.01+log2(phospho1[pzeros,5:ncol(phospho1)]),2,
+             function(x) {0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T)}) |>
+  as.data.frame() |>
+  mutate(site=phospho1$site[pzeros])
+
+##move to long form, upload
+plong1<-pmat1|>
+  tidyr::pivot_longer(1:(ncol(pmat1)-1),names_to='fname',values_to='abundance')|>
+  left_join(pfnames1) |>
+  group_by(site,fname,aliquot,cohort) |>
+  summarize(meanAbundance=mean(abundance,na.rm=T))|>
+  subset(!is.na(meanAbundance))|>
+  left_join(meta)
+
+readr::write_csv(plong1,file='log2normMedCenteredPhospho.csv')
+syn$store(File('log2normMedCenteredPhospho.csv',parentId='syn70078365'))
+
+```
+The file is uploaded to synapse.
+
+### Cohort 2 phospho
+
+Now on October 7 we can process the second batch of phospho. 
+
+```{r cohort 2 phospho}
+
+##cohort 2 phospho
+##1 read in data
+phospho2 <- read.table(syn$get('syn69947351')$path,sep='\t',fill=NA,header=T,quote='"') |>
+  subset(!is.na(`Gene.Names`)) |>
+  subset(Gene.Names != '') |>
+  mutate(lsite = tolower(Residue)) |>
+  tidyr::unite(c(Residue,Site,lsite),col = 'site',sep='') |>
+  tidyr::unite(c(`Gene.Names`,site),col = 'site',sep='-')
+
+
+phospho2[which(phospho2==0,arr.ind=TRUE)] <- NA
+
+pfnames2 <- data.frame(fname=colnames(phospho2)[5:ncol(phospho2)]) |>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9])) |>
+  mutate(aliquot=as.double(aliquot))|>
+  mutate(cohort=2)
+
+##remove missingness 
+tm <- which(apply(phospho2[,5:ncol(phospho2)],1,function(x) length(which(is.na(x)))/length(x) < 0.5))
+
+##log2 adjusted z score
+pmat2<-apply(log2(0.01+phospho2[tm,5:ncol(phospho2)]),2,
+              function(x) {0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T)}) |>
+  as.data.frame() |>
+  mutate(site=phospho2$site[tm])
+
+
+
+plong2<-pmat2|>
+  tidyr::pivot_longer(1:(ncol(pmat2)-1),names_to='fname',values_to='abundance') |>
+  left_join(pfnames2)|>
+  group_by(site,fname,aliquot,cohort) |>
+  summarize(meanAbundance=mean(abundance,na.rm=T)) |>
+  subset(!is.na(meanAbundance))|>
+  left_join(meta)
+
+##save to file
+readr::write_csv(plong2,file='log2normMedCenteredPhospho_cohort2.csv')
+syn$store(File('log2normMedCenteredPhospho_cohort2.csv',parentId='syn70078365'))
+
+
+```
+
+Now that we have two cohorts we can try to combine without batch correction.
+
+### Combined phospho
+Combining the phoshpo data here. 
+
+```{r combined phospho}
+
+##now we move back to long form
+plong <- rbind(plong1,plong2)
+  #pmat |>
+#  as.data.frame()|>
+#  tibble::rownames_to_column('site')|>
+#  pivot_longer(-site,names_to='fname',values_to='abundance')|>
+#  left_join(rbind(pfnames1,pfnames2))|>
+#    group_by(site,fname,aliquot,cohort) |>
+#  summarize(meanAbundance=mean(abundance,na.rm=T)) |>
+#  left_join(meta)
+
+         
+compsites <- plong|>
+#  subset(meanAbundance>(-5))|>
+  group_by(site)|>
+  summarize(spec = n_distinct(Specimen))|>
+  subset(spec==31)
+
+#plong$meanAbundance[which(!is.finite(plong$meanAbundance))]<-0
+
+ppcs<-plong|>ungroup()|>
+  dplyr::select(Specimen,meanAbundance,site)|>
+  unique()|>
+  subset(site%in%compsites$site)|>
+  #subset(!is.na(site))|>
+  #subset(!is.na(meanAbundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',
+                     values_fn=mean,values_fill=0)|>
+  tibble::column_to_rownames('site')|>
+  t()|>
+  prcomp()
+
+pplot<-ppcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2,PC3)|>
+  tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+  dplyr::select(PC2,PC1,Specimen,Patient,cohort)|>
+  mutate(cohort=as.factor(cohort))|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+
+    geom_point()+
+    #ggrepel::geom_label_repel()+
+    ggtitle("Phospho samples")+
+  ggplot2::scale_color_manual(values=pcols)
+
+ph<- plong |>ungroup()|>
+  subset(site%in%compsites$site)|>
+  ggplot(aes(x=meanAbundance,fill=as.factor(cohort)))+geom_histogram()
+
+cowplot::plot_grid(ph,pplot)
+ggsave('cNFPhosphoQC.png',width=10)
+
+pplot
+ggsave('phosphoPCA.pdf')
+```
+
+Clearly there is a strong batch effect.
+
+## Normalize golbal proteomics
+Now we can move onto the global data
+
+### Cohort 1 global
+
+Global proteomics in cohort 1 here. 
+
+```{r global}
+####now process global
+#global1<-readr::read_tsv(syn$get('syn64906445')$path)
+global1 <- read.table(syn$get('syn69947355')$path,sep='\t',header=T,quote='"') |>
+  tidyr::separate_rows(Genes,sep=';')
+##logtransform, medina transform
+
+#global1[which(global1==0,arr.ind=TRUE)]<-NA
+
+gmat1<-apply(log2(global1[,5:ncol(global1)]),2,function(x) 0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T))
+
+gmat1<-gmat1|>
+  as.data.frame()|>
+  mutate(Genes=global1$Genes)
+
+##extract aliquot info from file name
+gfnames1 <- data.frame(fname=colnames(global1)[5:ncol(global1)]) |>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[6])) |>
+  mutate(aliquot=as.double(aliquot))|>
+  mutate(cohort=1)
+
+glong1<-gmat1|>
+    tidyr::pivot_longer(1:(ncol(gmat1)-1),names_to='fname',values_to='abundance')|>
+ left_join(gfnames1)|>
+   group_by(Genes,fname,aliquot,cohort)|>
+  summarize(meanAbundance=mean(abundance))|>
+  subset(is.finite(meanAbundance))|>
+  left_join(meta)
+         
+
+readr::write_csv(glong1,file='log2normMedCenteredGlobal.csv')
+syn$store(File('log2normMedCenteredGlobal.csv',parentId='syn70078365'))
+```
+
+### Cohort 2 global
+October 7 we process the second cohort. 
+
+
+```{r batch 2 global}
+global2<-read.table(syn$get('syn69947352')$path,header=T,sep='\t',quote='"')|>
+  tidyr::separate_rows(Genes,sep=';')
+
+#global2[which(global2==0,arr.ind=TRUE)]<-NA
+
+gmat2<-apply(log2(global2[,5:ncol(global2)]),2,function(x) 
+  0.6745 *(x-median(x,na.rm=T))/mad(x,na.rm=T))
+rownames(gmat2)<-global2$Genes
+
+gmat2<-gmat2|>
+  as.data.frame()|>
+  mutate(Genes=global2$Genes)
+
+gfnames2 <- data.frame(fname=colnames(global2)[5:ncol(global2)]) |>
+  mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[7])) |>
+  mutate(aliquot=as.double(aliquot))|>
+  mutate(cohort=2)
+
+glong2<-gmat2|>
+  tidyr::pivot_longer(1:(ncol(gmat2)-1),names_to='fname',values_to='abundance')|>
+  left_join(gfnames2)|>
+  group_by(Genes,fname,aliquot,cohort)|>
+  summarize(meanAbundance=mean(abundance))|>
+  subset(is.finite(meanAbundance))|>
+  left_join(meta)
+
+#dupes<-global|>group_by(Genes)|>summarize(numIso=n())|>
+#  subset(numIso>1)
+
+
+readr::write_csv(glong2,file='log2normMedCenteredGlobal_cohort2.csv')
+syn$store(File('log2normMedCenteredGlobal_cohort2.csv',parentId='syn70078365'))
+```
+
+### Global combined without batch correction
+Now we can combine the global withot batch correction.
+
+```{r combined global test}
+#ma<-mean(glong$abundance,na.rm=T)
+#glong$meanAbundance[which(!is.finite(glong$meanAbundance))]<-0
+glong <- rbind(glong1,glong2)|>
+  subset(Genes!="")
+      
+compsites <- glong|>
+#  subset(meanAbundance>(-5))|>
+  group_by(Genes)|>
+  summarize(spec = n_distinct(Specimen))|>
+  subset(spec==31)
+
+gpcs<-glong|>ungroup()|>
+  dplyr::select(Specimen,meanAbundance,Genes)|>
+  subset(!is.na(Genes))|>
+  subset(Genes!="")|>
+  subset(Genes%in%compsites$Genes)|>
+  subset(!is.na(meanAbundance))|>
+  tidyr::pivot_wider(names_from='Specimen',values_from='meanAbundance',values_fn=mean,values_fill=0)|>
+  tibble::column_to_rownames('Genes')|>t()|>
+  prcomp()
+
+gplot<-gpcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2)|>
+  tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+    dplyr::select(PC1,PC2,Specimen,Patient,cohort)|>
+    mutate(cohort=as.factor(cohort))|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+
+  geom_point()+ggrepel::geom_label_repel()+ggtitle("Global samples")+
+  scale_color_manual(values=pcols)
+
+
+hplot <- ggplot(glong,aes(x=meanAbundance,fill=as.factor(cohort)))+geom_histogram()
+     
+
+cowplot::plot_grid(hplot,gplot)
+ggsave('cNFGlobalQC.png',width=10)
+
+  
+gplot
+
+ggsave('globalPCA.pdf')
+
+```
+
+
+
+## Evaluate batch correction
+
+Now we have two separate long tables with metadata, but we would like to combine into a single one and batch correct.We can update this with each cohort. 
+
+```{r combine and correct}
+
+##phospho 
+##TODO: ideally we should use the long tables and reconvert
+pmat <- merge(as.data.frame(pmat1),as.data.frame(pmat2))
+
+gmat <- merge(gmat1,gmat2)
+
+##remove duplicated sites
+dsites<- unique(pmat$site[which(duplicated(pmat$site))])
+mvals<-sapply(dsites,function(x) colSums(pmat[pmat$site==x,2:ncol(pmat)])) |>
+  t() |>
+  as.data.frame() |>
+  tibble::rownames_to_column('site')
+
+pmat <- pmat |>
+  subset(!site %in% dsites) |>
+  rbind(mvals)
+
+##now convert to matrix
+pmat <- pmat |>
+  tibble::remove_rownames() |>
+  tibble::column_to_rownames('site') |>
+  as.matrix()
+
+gmat <- gmat |>
+  subset(Genes!='')|>
+    tibble::remove_rownames() |>
+  tibble::column_to_rownames('Genes') |>
+    as.matrix()
+##sigh, batch correct?
+library(sva)
+
+  pmat[which(!is.finite(pmat),arr.ind=T)] <- 0.0
+  cbmat<-sva::ComBat(pmat,batch=meta$cohort,mean.only = FALSE)
+  
+  gmat[which(!is.finite(gmat),arr.ind=T)] <- 0.0
+  cgmat <- sva::ComBat(gmat,batch=meta$cohort,mean.only = FALSE)
+
+ ppcs<-prcomp(t(cbmat))
+ 
+ pplot<-ppcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2)|>
+  tibble::rownames_to_column('fname')|>
+   left_join(rbind(pfnames1,pfnames2))|>
+  left_join(meta)|>
+    dplyr::select(PC1,PC2,Specimen,Patient,cohort)|>
+    mutate(cohort=as.factor(cohort))|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+
+  geom_point()+ggrepel::geom_label_repel()+ggtitle("Corrected phospho samples")+
+  scale_color_manual(values=pcols)
+ 
+ pplot
+ gpcs<-prcomp(t(cgmat))
+ gplot<-gpcs$x|>
+  as.data.frame()|>
+  dplyr::select(PC1,PC2)|>
+  tibble::rownames_to_column('fname')|>
+   left_join(rbind(gfnames1,gfnames2))|>
+  left_join(meta)|>
+    dplyr::select(PC1,PC2,Specimen,Patient,cohort)|>
+    mutate(cohort=as.factor(cohort))|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+
+  geom_point()+ggrepel::geom_label_repel()+ggtitle("Corrected global samples")+
+  scale_color_manual(values=pcols)
+
+ gplot
+
+```
+
+## Upload batch-corrected data to synapse
+
+Now we can reformat the batch-corrected data and upload to syanps
+
+```{r upload batch corrected}
+
+pc_long <- cbmat |>
+  as.data.frame() |>
+    tibble::rownames_to_column('site') |>
+    pivot_longer(-site,names_to = 'fname',values_to = 'correctedAbundance') |>
+  left_join(rbind(pfnames1,pfnames2)) |>
+  left_join(meta) |>
+  distinct()
+
+gc_long <- cgmat |>
+   as.data.frame() |>
+    tibble::rownames_to_column('Gene') |>
+    pivot_longer(-Gene,names_to = 'fname',values_to = 'correctedAbundance') |>
+  left_join(rbind(gfnames1,gfnames2)) |>
+  left_join(meta) |>
+  distinct()
+
+
+readr::write_csv(pc_long,file = 'batch12_correctedPhospho.csv')
+readr::write_csv(gc_long,file = 'batch12_correctedGlobal.csv')
+
+syn$store(File('batch12_correctedPhospho.csv',parentId = 'syn70078365'))
+syn$store(File('batch12_correctedGlobal.csv',parentId = 'syn70078365'))
+
+
+
+
+```

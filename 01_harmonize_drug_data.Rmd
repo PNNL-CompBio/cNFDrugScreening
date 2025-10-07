@@ -1,0 +1,54 @@
+---
+title: "Harmonize normalize drug data"
+author: "Sara Gosline"
+date: "2025-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(synapser)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+
+## Download drug stats
+First we need to downlod the summary stats for each organoid .
+
+```{r download, warning=FALSE}
+source('cNF_helper_code.R')
+
+fits<-readr::read_tsv(synGet('syn69947322')$path)
+
+  
+
+
+
+```
+
+## Plot data from drug
+
+Here we can write a function that plots data for a drug across patients
+
+```{r summary, echo=FALSE}
+
+ fits|>subset(dose_response_metric=='uM_viability')|>ggplot(aes(x=dose_response_value,y=improve_sample_id,fill=improve_sample_id,alpha=0.5))+ggridges::geom_density_ridges()+ggtitle('Viabilities across samples')
+
+##we can also plot samples according to their drug response
+pcs = fits|>subset(dose_response_metric=='uM_viability')|>
+  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
+  distinct()|>
+  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fill=1.0,values_fn=mean)|>
+  tibble::column_to_rownames('improve_sample_id')|>prcomp()
+
+pcs$x|>as.data.frame()|>tibble::rownames_to_column('Specimen')|>
+  left_join(meta)|>
+  dplyr::select(PC1,PC2,Patient,Specimen)|>
+  distinct()|>
+  ggplot(aes(x=PC1,y=PC2,col=Patient,label=Specimen))+geom_point()+
+  ggrepel::geom_label_repel()+
+  ggplot2::scale_color_manual(values=pcols)
+
+```
