@@ -1,9 +1,16 @@
 ---
-title: "Evaluate drug stats"
+title: "Evaluate drug and omics data for biomarker assessment"
 author: "Sara gosline"
 date: "2025-03-13"
 output: html_document
 ---
+
+This document is designed to be a working document where we can compare approaches to evaluate biomarkers of drug response across patient samples. We are collecting three types of data modalities:
+1. RNA Sequencing
+2. Global Proteomics
+3. Phospho proteomics
+
+We also have drug sensitivity data (single dose viability, some curves) for many drugs. The question to ask is which molecules can predict drug response across patients? How robust/extendable is this? 
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -21,11 +28,17 @@ We have already run the previous scripts and stored data on Synapse
 
 ```{r pull files}
 source('cNF_helper_code.R')
+##read in drug code
+fits <- readr::read_tsv(synGet('syn69947322')$path)
 
-fits<-readr::read_tsv(synGet('syn69947322')$path)
 
-glong <- readr::read_csv(synGet('syn69947848')$path)
-plong <- readr::read_csv(synGet('syn69947577')$path)
+##read in proteomic data
+glong <- readr::read_csv(synGet('syn70078416')$path)
+plong <- readr::read_csv(synGet('syn70078415')$path)
+
+
+##read in transcrniptomic data
+#TODO: process transcritpomic data into long format
 
 ```
 
@@ -37,36 +50,96 @@ Do simple correlations to identify putative trends in the data.
 
 
 shared<-intersect(fits$improve_sample_id,glong$Specimen)
-print(paste('Found',length(shared),'shared samples'))
+print(paste('Found',length(shared),'shared samples from',length(unique(fits$improve_sample_id)),'drug experiments and',length(unique(glong$Specimen)),'proteomic experiments'))
 
 glob_dat<-glong|>ungroup()|>
   subset(Specimen%in%shared)|>
-  dplyr::select(Specimen,Genes,meanAbundance)|>
-  tidyr::pivot_wider(names_from='Genes',values_from='meanAbundance',values_fill=0,values_fn=mean)|>
+  dplyr::select(Specimen,Gene,correctedAbundance)|>
+  tidyr::pivot_wider(names_from='Gene',values_from='correctedAbundance',values_fill=0,values_fn=mean)|>
   tibble::column_to_rownames('Specimen')
   
 
 phos_dat<-plong|>ungroup()|>
   subset(Specimen%in%shared)|>
-  dplyr::select(Specimen,site,meanAbundance)|>
-  tidyr::pivot_wider(names_from='site',values_from='meanAbundance',values_fill=0,values_fn=mean)|>
+  dplyr::select(Specimen,site,correctedAbundance)|>
+  tidyr::pivot_wider(names_from='site',values_from='correctedAbundance',values_fill=0,values_fn=mean)|>
   tibble::column_to_rownames('Specimen')
 
 
+
+## drug data to matrix here
+drug_dat <- fits|>subset(dose_response_metric=='uM_viability') |>
+  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value) |>
+  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean) |>
+  tibble::column_to_rownames('improve_sample_id')
+
 ```
 
-### Correlate uM viabilities with protein/phosphosite expression
 
-Look at uM viabilities and see what we can find that correlates with expression
+# Basic correlation tests
+Can we simply find and rank proteins/psites/transcripts by correlation and do enrichment?
 
-```{r find common samples, warning=FALSE,error=FALSE}
+# Random forest preditor
+
+## Random forest
+
+Here we try to use random forest to exract predictive features. First we need to assess if the model can accurately predict drug response from the data. From those predictive models, we can extract features/biomarkers. 
+
+First we build the data frames needed - I've included cohort as a covariate but may remove it.
+
+```{r random forest}
+## separate out cohorts for prediction 
+cohorts <- meta |>
+  select(Specimen,cohort) |>
+  distinct() |>
+  tibble::column_to_rownames('Specimen')
+
+##for each drug, build model of cohort + protein ~ drug response
+gdf <- as.data.frame(glob_dat)|>
+  mutate(cohort=cohorts[rownames(glob_dat),'cohort'])
+gnas <- which(apply(gdf,2,function(x) any(is.na(x))))
+
+pdf <- as.data.frame(phos_dat)|>
+  mutate(cohort=cohorts[rownames(phos_dat),'cohort'])
+pnas <- which(apply(pdf,2,function(x) any(is.na(x))))
+
+mdf <- meta[-c(2,5),]|> ##have duplication here
+  tibble::column_to_rownames('Specimen')
+##pick a drug, remove nas, then apply rf
+
+```
+
+Now we can loop through every drug, build model, and assess accuracy. 
+```{r evaluate predictivty}
+complete_drugs<-which(apply(drug_dat,2,
+                            function(x) length(which(!is.na(x)))==length(x)))
+
+drug <- names(complete_drugs)[1]
+dg <- gdf#[,-gnas]
+dmdf <- mdf|>
+  mutate(drug=drug_dat[rownames(mdf),drug])
+rf <- randomForest::randomForest(x=dg,
+                                 y=drug_dat[rownames(dg),drug], 
+                                 importance=TRUE,ntree=500)
+
+im <- randomForest::importance(rf)|>
+  as.data.frame()|>
+  subset(`%IncMSE`<(-1.3))
+pord<-intersect(rownames(mdf)[order(drug_dat[rownames(mdf),drug])],rownames(glob_dat))
+pheatmap::pheatmap(t(glob_dat[pord,
+                              rownames(im)]),annotation_col=dmdf,
+                   cellheight=10,cluster_cols = TRUE)
+
+```
 
 
-## a full join might be a challenge, maybe just take two matrices
-drug_dat <- fits|>subset(dose_response_metric=='uM_viability')|>
-  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value)|>
-  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean)|>
-  tibble::column_to_rownames('improve_sample_id')
+not sure how to go forward with random forest at the moment...
+
+## Use correlation statistics to identify biomarkers
+
+Here do simple correlations between protein/phosphosite and drug response, selecting significant markers. 
+
+```{r old correlation code, eval=TRUE}
 
 gres<-cor(drug_dat[shared,],glob_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
   as.data.frame()|>
@@ -79,7 +152,10 @@ gres<-cor(drug_dat[shared,],glob_dat[shared,],use='pairwise.complete.obs',method
 gsig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
   do.call(rbind,lapply(colnames(glob_dat),function(y){
     pval<-1.0
-    try(pval<-cor.test(drug_dat[shared,x],glob_dat[shared,y],use='pairwise.complete.obs',method='pearson')$p.value,silent=TRUE)
+    try(pval<-cor.test(drug_dat[shared,x],
+                         glob_dat[shared,y],
+                       use='pairwise.complete.obs',
+                       method='pearson')$p.value,silent=TRUE)
     return(c(corp=pval,drug=x,gene=y))
     }
     ))|>as.data.frame()|>
@@ -91,7 +167,8 @@ gsig<-do.call(rbind,lapply(colnames(drug_dat),function(x){
 
 fullcors<-gres|>left_join(data.frame(gsig))|>mutate(data='global')
 
-pres<-cor(drug_dat[shared,],phos_dat[shared,],use='pairwise.complete.obs',method='pearson')|>
+pres<-cor(drug_dat[shared,],phos_dat[shared,],
+          use='pairwise.complete.obs',method='pearson')|>
     as.data.frame()|>
     tibble::rownames_to_column('drug')|>
   tidyr::pivot_longer(cols=2:(1+ncol(phos_dat)),names_to='site',values_to='pCor')|>
@@ -117,28 +194,30 @@ allcor<-rbind(fullcors,fullpcors)|>
   mutate(direction=ifelse(pCor<0,'neg','pos'))
 
 readr::write_csv(allcor,'globalPhosphoDrugCors.csv')
-synapser::synStore(synapser::File('globalPhosphoDrugCors.csv',parentId='syn66313784'))
+#synapser::synStore(synapser::File('globalPhosphoDrugCors.csv',parentId='syn66313784'))
 ##lets count the correlations and plot
 
-corsummary<-allcor|>subset(fdr<0.05)|>
+corsummary<-allcor|>subset(fdr<0.25)|>
   group_by(drug,data,direction)|>
   summarize(features=n(),meanCor=mean(pCor))
+
+
 corsummary|>
   subset(features>1)|>
-  ggplot(aes(x=data,y=features,fill=drug))+facet_grid(~direction)+geom_bar(position='dodge',stat='identity')
+  ggplot(aes(x=drug,y=features,fill=direction))+facet_grid(data~.)+geom_bar(position='dodge',stat='identity')
 
-ggsave('correlatedFeaturesFDR0.05.pdf')
+ggsave('correlatedFeaturesFDR0.25.pdf')
 
 ```
 Now that we have the correlations we can cherry pick some examples to showcase
 
-```{r plot cors}
+```{r plot cors, eval=FALSE}
 
 plotCors <- function(features,druglist,dataType='global'){
   ##subset a list of features and drugs and plot those in a graph
   require(ggplot2)
   if(dataType=='global'){
-    ptab<-glong|>dplyr::rename(feature='Genes')
+    ptab<-glong|>dplyr::rename(feature='Gene')
   }else{
     ptab<-plong|>dplyr::rename(feature='site')
   }
@@ -151,37 +230,55 @@ plotCors <- function(features,druglist,dataType='global'){
   ftab<-features|>left_join(ptab)|>left_join(dtab)|>
     subset(!is.na(Drug))
   
-  ftab|>ggplot(aes(x=meanAbundance,y=dose_response_value,col=Patient,size=1))+
+  feats <- unique(features$feature)
+  plots <- lapply(feats,function(x){
+    corval <- ftab[ftab$feature==x,'pCor']
+    #corval <- ftab[ftab$feature==x,'pCor']
+
+      ftab|>subset(feature==x)|>
+        ggplot(aes(x=correctedAbundance,y=dose_response_value,
+                   col=Patient,size=1,shape=cohort))+
     geom_point()+
-    facet_grid(feature~Drug)+
+    facet_grid(~Drug)+
+      ggtitle(paste(x,'Drug correlation'))+
     scale_color_manual(values=pcols)
+    })
+  cowplot::plot_grid(plotlist= plots,ncol=1)
+
 }
 
 druglist<-c('Onalespib')
 features<-subset(allcor,drug%in%druglist)|>
-  subset(fdr<0.1)|>
-  subset(data=='phospho')
+  subset(fdr<0.25)|>
+  subset(abs(pCor)>0.7)|>
+  subset(data=='global')|>
+  arrange(desc(abs(pCor)))
 
-plotCors(rename(features,feature='gene'),druglist)
-ggsave('onalespibFDR0.05Cors.pdf',height=5)
+plotCors(rename(features[1:10,],feature='gene'),druglist)
+
+ggsave('onalespibFDR0.25Cors.pdf',height=20)
 
 ```
 
 now we can visualize correlations
-```{r check out HSP90s}
+```{r check out HSP90s, eval=FALSE}
 
 hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 
-cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
-print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
+cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.2)
+#print(paste('measured',length(hsps),'HSPs in global data of which', nrow(cor_hsps),' are correlated with Onalespib'))
 
 plotCors(rename(cor_hsps,feature='gene'),c('Onalespib'))
 
-ggsave('hspCorsOna.pdf',width=8,height=14)
+ggsave('hspCorsOna.pdf',height=nrow(cor_hsps)*3)
 
 hspp<-unique(plong$site[grep('^HSP',plong$site)])
-cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.01)
-print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
+cor_hspps<-subset(allcor,gene%in%hspp)|>subset(drug=='Onalespib')|>subset(corp<0.2)
+#print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hspps),' are correlated with Onalespib'))
+
+plotCors(rename(cor_hspps,feature='gene'),c('Onalespib'),'phospho')
+
+ggsave('hspPhosphoCorsOna.pdf',height=nrow(cor_hspps)*3)
 
 
 ```
@@ -190,7 +287,7 @@ print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hsp
 
 There are a few drugs for which we have IC50 values
 
-```{r check ic50 cors,warning=FALSE,error=FALSE}
+```{r check ic50 cors,warning=FALSE,error=FALSE, eval=FALSE}
 
 ifits<-subset(fits,dose_response_metric=='fit_ic50')
 
@@ -267,7 +364,9 @@ corsummary|>
 
 Again we have onalespib with numerous significantly correlated proteins, and one phosphosite for digoxin showing up .
 
-```{r plot individual sites}
+
+
+```{r plot individual sites, eval=FALSE}
 
 druglist<-c('Onalespib')
 features<-subset(allcor,drug%in%druglist)|>
@@ -290,7 +389,7 @@ features<-subset(allcor,drug%in%druglist)|>
 
 Now we can check the HSP proteins directly
 
-```{r HSP correlation}
+```{r HSP correlation, eval=FALSE}
 hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 
 cor_hsps<-subset(allcor,gene%in%hsps)|>subset(drug=='Onalespib')|>subset(corp<0.05)
@@ -307,7 +406,7 @@ print(paste('measured',length(hspp),'HSPs in phospho data of which',nrow(cor_hsp
 
 The IC50 result is similar to the viability. Now we can check AUC
 
-```{r auc hsp check, error=FALSE, warning=FALSE}
+```{r auc hsp check, error=FALSE, warning=FALSE, eval=FALSE}
 
 ifits<-subset(fits,dose_response_metric=='auc')
 
@@ -381,7 +480,7 @@ corsummary|>
 print(corsummary)
 
 ```
-```{r HSP correlation again}
+```{r HSP correlation again, eval=FALSE}
 hsps<-unique(glong$Genes[grep('^HSP',glong$Genes)])
 
 cor_hsps<-subset(allcor,gene%in%hsps)|>s

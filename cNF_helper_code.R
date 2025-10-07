@@ -20,7 +20,8 @@ meta <- rbind(meta1,meta2)
 
 
 
-pcols <- c(NF0017='steelblue',NF0021='orange3',NF0019='orchid4',
-           NF0022='goldenrod',NF0018='olivedrab',NF0020='darkred', NF0022='tan',
-           NF0023='darkgrey',NF0025='lightblue',NF0026='lightyellow',NF0027='magenta3',
-           NF0028='lightgreen',NF0031='pink')
+pcols <- c(NF0017='steelblue',NF0021='orange2',NF0019='orchid4',
+           NF0022='goldenrod4',NF0018='olivedrab',NF0020='darkred', NF0022='tan',
+           NF0023='darkgrey',NF0025='lightblue',NF0026='yellow3',NF0027='magenta3',
+           NF0028='lightgreen',NF0031='pink2')
+
