@@ -293,7 +293,7 @@ rfFeatures <- function(drug_dat,fdf, mdf){
   return(im)
   ##what do we return?x
   }))
-  return(rfFeatures)
+  return(all_preds)
 }
 
 
@@ -304,10 +304,10 @@ Now what do we do with the importance features?
 ```{r rf processing}
 
 ##get importance for global
-gimp <- rfFeatures(drug_dat,gdf,mdf)
+gimp <- rfFeatures(drug_dat=drug_dat,fdf=gdf,mdf=mdf)
 
 ##get importance for phospho
-pimp <- rfFeatures(drug_dat,pdf,mdf)
+pimp <- rfFeatures(drug_dat=drug_dat,fdf=pdf,mdf=mdf)
 
 ```
 
