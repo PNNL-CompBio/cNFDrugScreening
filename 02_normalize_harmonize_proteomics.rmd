@@ -5,18 +5,44 @@ date: "2025-09-28"
 output: html_document
 ---
 
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(ggplot2)
 library(dplyr)
 library(tidyr)
+library(stringr)
+library(synapser)
+library(grid)
 source('cNF_helper_code.R')
+```
+
+# Drop sample list.  These were for protocol optimization
+```{r}
+remove_fname_substrings <- c(
+  "cNF_organoid_DIA_G_02_11Feb25",
+  "cNF_organoid_DIA_G_05_11Feb25",
+  "cNF_organoid_DIA_G_06_11Feb25",
+  "cNF_organoid_DIA_P_02_29Jan25",
+  "cNF_organoid_DIA_P_05_11Feb25",
+  "cNF_organoid_DIA_P_06_11Feb25"
+)
+
+is_unwanted_fname <- function(x) {
+  vapply(x, function(s)
+    any(vapply(remove_fname_substrings, function(p) grepl(p, s, fixed = TRUE), logical(1))),
+    logical(1)
+  )
+}
+
 
 ```
 
+
+
 ## Normalize phospho-proteomics
 
-We now have phospho proteomics from two cohorts. Here I'm trying to collect data from both and normalize but am clearly missing something. I do the following:
+We now have phosphoproteomics from two cohorts. Here I'm trying to collect data from both and normalize but am clearly missing something. I do the following:
 
 1. replace all zero values with NA to avoid skewing normalization
 2. remove any features that are absent from >50% of the samples
@@ -45,7 +71,10 @@ phospho1[which(phospho1==0,arr.ind=TRUE)]<-NA
 pfnames1 <- data.frame(fname=colnames(phospho1)[5:ncol(phospho1)])|>
   mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[8]))|>
   mutate(aliquot=as.double(aliquot))|>
-  mutate(cohort=1)
+  mutate(cohort=1) |>
+  dplyr::filter(!is_unwanted_fname(fname))
+
+
  
 ##logtransform##median transform
 pzeros<-which(apply(phospho1[,5:ncol(phospho1)],1,function(x)
@@ -92,7 +121,8 @@ phospho2[which(phospho2==0,arr.ind=TRUE)] <- NA
 pfnames2 <- data.frame(fname=colnames(phospho2)[5:ncol(phospho2)]) |>
   mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[9])) |>
   mutate(aliquot=as.double(aliquot))|>
-  mutate(cohort=2)
+  mutate(cohort=2)|>
+  dplyr::filter(!is_unwanted_fname(fname))
 
 ##remove missingness 
 tm <- which(apply(phospho2[,5:ncol(phospho2)],1,function(x) length(which(is.na(x)))/length(x) < 0.5))
@@ -128,7 +158,12 @@ Combining the phoshpo data here.
 ```{r combined phospho}
 
 ##now we move back to long form
-plong <- rbind(plong1,plong2)
+# plong <- rbind(plong1,plong2)
+
+plong1 <- plong1 |> dplyr::filter(!is_unwanted_fname(fname))
+plong2 <- plong2 |> dplyr::filter(!is_unwanted_fname(fname))
+plong  <- rbind(plong1, plong2) |> dplyr::filter(!is_unwanted_fname(fname))
+
   #pmat |>
 #  as.data.frame()|>
 #  tibble::rownames_to_column('site')|>
@@ -212,7 +247,8 @@ gmat1<-gmat1|>
 gfnames1 <- data.frame(fname=colnames(global1)[5:ncol(global1)]) |>
   mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[6])) |>
   mutate(aliquot=as.double(aliquot))|>
-  mutate(cohort=1)
+  mutate(cohort=1)|>
+  dplyr::filter(!is_unwanted_fname(fname))
 
 glong1<-gmat1|>
     tidyr::pivot_longer(1:(ncol(gmat1)-1),names_to='fname',values_to='abundance')|>
@@ -248,7 +284,9 @@ gmat2<-gmat2|>
 gfnames2 <- data.frame(fname=colnames(global2)[5:ncol(global2)]) |>
   mutate(aliquot=sapply(fname,function(x) unlist(strsplit(x,split='_'))[7])) |>
   mutate(aliquot=as.double(aliquot))|>
-  mutate(cohort=2)
+  mutate(cohort=2)|>
+  dplyr::filter(!is_unwanted_fname(fname))
+gfnames1
 
 glong2<-gmat2|>
   tidyr::pivot_longer(1:(ncol(gmat2)-1),names_to='fname',values_to='abundance')|>
@@ -272,14 +310,17 @@ Now we can combine the global withot batch correction.
 ```{r combined global test}
 #ma<-mean(glong$abundance,na.rm=T)
 #glong$meanAbundance[which(!is.finite(glong$meanAbundance))]<-0
-glong <- rbind(glong1,glong2)|>
+glong1 <- glong1 |> dplyr::filter(!is_unwanted_fname(fname))
+glong2 <- glong2 |> dplyr::filter(!is_unwanted_fname(fname))
+glong  <- rbind(glong1, glong2) |> dplyr::filter(!is_unwanted_fname(fname)) |>
   subset(Genes!="")
-      
+
+n_spec <- meta |> dplyr::distinct(Specimen) |> nrow()
 compsites <- glong|>
 #  subset(meanAbundance>(-5))|>
   group_by(Genes)|>
   summarize(spec = n_distinct(Specimen))|>
-  subset(spec==31)
+  subset(spec==n_spec)
 
 gpcs<-glong|>ungroup()|>
   dplyr::select(Specimen,meanAbundance,Genes)|>
@@ -355,44 +396,165 @@ gmat <- gmat |>
     as.matrix()
 ##sigh, batch correct?
 library(sva)
+# 
+#   pmat[which(!is.finite(pmat),arr.ind=T)] <- 0.0
+#   cbmat<-sva::ComBat(pmat,batch=meta$cohort,mean.only = FALSE)
+#   
+#   gmat[which(!is.finite(gmat),arr.ind=T)] <- 0.0
+#   cgmat <- sva::ComBat(gmat,batch=meta$cohort,mean.only = FALSE)
 
-  pmat[which(!is.finite(pmat),arr.ind=T)] <- 0.0
-  cbmat<-sva::ComBat(pmat,batch=meta$cohort,mean.only = FALSE)
-  
-  gmat[which(!is.finite(gmat),arr.ind=T)] <- 0.0
-  cgmat <- sva::ComBat(gmat,batch=meta$cohort,mean.only = FALSE)
 
- ppcs<-prcomp(t(cbmat))
+pmat[which(!is.finite(pmat),arr.ind=T)] <- 0.0
+## align ComBat batch vector to pmat columns via filename→cohort maps
+sample_meta_p <- data.frame(fname = colnames(pmat)) |>
+  dplyr::left_join(rbind(pfnames1, pfnames2), by = "fname") |>
+  dplyr::select(fname, cohort)
+keep_p <- !is.na(sample_meta_p$cohort)
+pmat   <- pmat[, keep_p, drop = FALSE]
+pbatch <- sample_meta_p$cohort[keep_p]
+cbmat  <- sva::ComBat(dat = pmat, batch = pbatch, mean.only = FALSE)
+
+gmat[which(!is.finite(gmat),arr.ind=T)] <- 0.0
+## align ComBat batch vector to gmat columns via filename→cohort maps
+sample_meta_g <- data.frame(fname = colnames(gmat)) |>
+  dplyr::left_join(rbind(gfnames1, gfnames2), by = "fname") |>
+  dplyr::select(fname, cohort)
+keep_g <- !is.na(sample_meta_g$cohort)
+gmat   <- gmat[, keep_g, drop = FALSE]
+gbatch <- sample_meta_g$cohort[keep_g]
+cgmat  <- sva::ComBat(dat = gmat, batch = gbatch, mean.only = FALSE)
+
+
+ppcs<-prcomp(t(cbmat))
+gpcs<-prcomp(t(cgmat))
  
- pplot<-ppcs$x|>
-  as.data.frame()|>
-  dplyr::select(PC1,PC2)|>
-  tibble::rownames_to_column('fname')|>
-   left_join(rbind(pfnames1,pfnames2))|>
-  left_join(meta)|>
-    dplyr::select(PC1,PC2,Specimen,Patient,cohort)|>
-    mutate(cohort=as.factor(cohort))|>
-  distinct()|>
-  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+
-  geom_point()+ggrepel::geom_label_repel()+ggtitle("Corrected phospho samples")+
-  scale_color_manual(values=pcols)
- 
- pplot
- gpcs<-prcomp(t(cgmat))
- gplot<-gpcs$x|>
-  as.data.frame()|>
-  dplyr::select(PC1,PC2)|>
-  tibble::rownames_to_column('fname')|>
-   left_join(rbind(gfnames1,gfnames2))|>
-  left_join(meta)|>
-    dplyr::select(PC1,PC2,Specimen,Patient,cohort)|>
-    mutate(cohort=as.factor(cohort))|>
-  distinct()|>
-  ggplot(aes(x=PC1,y=PC2,label=Specimen,col=Patient,shape=cohort))+
-  geom_point()+ggrepel::geom_label_repel()+ggtitle("Corrected global samples")+
-  scale_color_manual(values=pcols)
+```
 
- gplot
+# plot batch corrected data
+```{r}
+# pplot <- ppcs$x |>
+#   as.data.frame() |>
+#   dplyr::select(PC1, PC2) |>
+#   tibble::rownames_to_column("fname") |>
+#   left_join(rbind(pfnames1, pfnames2)) |>
+#   left_join(meta) |>
+#   dplyr::select(PC1, PC2, Specimen, Patient, cohort) |>
+#   mutate(
+#     Tumor  = str_extract(Specimen, "_T\\d+") |> str_remove("_"),
+#     Tumor  = factor(Tumor),
+#     cohort = as.factor(cohort)
+#   ) |>
+#   distinct() |>
+#   dplyr::filter(!is.na(Patient), !is.na(Tumor)) |>
+#   ggplot(aes(x = PC1, y = PC2, col = Patient, shape = Tumor)) +
+#   geom_point(size = 3) +
+#   ggtitle("Corrected phospho samples") +
+#   scale_color_manual(values = pcols) +
+#   scale_shape_discrete(na.translate = FALSE) +
+#   theme(
+#     legend.title      = element_text(size = 9),
+#     legend.text       = element_text(size = 7),
+#     legend.key.size   = grid::unit(0.5, "cm"),
+#     legend.spacing.y  = grid::unit(0.2, "cm"),
+#     legend.box.spacing= grid::unit(0.3, "cm")
+#   )
+# 
+# pplot
+# 
+# 
+# gplot <- gpcs$x |>
+#   as.data.frame() |>
+#   dplyr::select(PC1, PC2) |>
+#   tibble::rownames_to_column("fname") |>
+#   left_join(rbind(gfnames1, gfnames2)) |>
+#   left_join(meta) |>
+#   dplyr::select(PC1, PC2, Specimen, Patient, cohort) |>
+#   mutate(
+#     Tumor = str_extract(Specimen, "_T\\d+") |> str_remove("_"),
+#     Tumor = factor(Tumor),
+#     cohort = as.factor(cohort)
+#   ) |>
+#   distinct() |>
+#   ggplot(aes(x = PC1, y = PC2, col = Patient, shape = Tumor)) +
+#   geom_point(size = 3) +
+#   ggtitle("Corrected global samples") +
+#   scale_color_manual(values = pcols) +
+#   theme(
+#     legend.title = element_text(size = 9),
+#     legend.text  = element_text(size = 7),
+#     legend.key.size = unit(0.5, "cm"),
+#     legend.spacing.y = unit(0.2, "cm"),
+#     legend.box.spacing = unit(0.3, "cm")
+#   )
+# 
+# gplot
+
+# Reusable theme: white background + light grey gridlines
+my_theme <- theme_bw() +
+  theme(
+    panel.grid.major = element_line(color = "grey85"),
+    panel.grid.minor = element_line(color = "grey92"),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    legend.title      = element_text(size = 9),
+    legend.text       = element_text(size = 7),
+    legend.key.size   = unit(0.5, "cm"),
+    legend.spacing.y  = unit(0.2, "cm"),
+    legend.box.spacing= unit(0.3, "cm")
+  )
+
+
+# --- Corrected phospho plot (white bg + grey grid) ---
+pplot <- ppcs$x |>
+  as.data.frame() |>
+  dplyr::select(PC1, PC2) |>
+  tibble::rownames_to_column("fname") |>
+  left_join(rbind(pfnames1, pfnames2)) |>
+  left_join(meta) |>
+  dplyr::select(PC1, PC2, Specimen, Patient, cohort) |>
+  mutate(
+    Tumor  = str_extract(Specimen, "_T\\d+") |> str_remove("_"),
+    Tumor  = factor(Tumor),
+    cohort = as.factor(cohort)
+  ) |>
+  distinct() |>
+  dplyr::filter(!is.na(Patient), !is.na(Tumor)) |>
+  ggplot(aes(x = PC1, y = PC2, col = Patient, shape = Tumor)) +
+  geom_point(size = 3) +
+  ggtitle("Corrected phospho samples") +
+  scale_color_manual(values = pcols) +
+  scale_shape_discrete(na.translate = FALSE) +
+  my_theme
+
+pplot
+
+
+
+# --- Corrected global plot (white bg + grey grid) ---
+gplot <- gpcs$x |>
+  as.data.frame() |>
+  dplyr::select(PC1, PC2) |>
+  tibble::rownames_to_column("fname") |>
+  left_join(rbind(gfnames1, gfnames2)) |>
+  left_join(meta) |>
+  dplyr::select(PC1, PC2, Specimen, Patient, cohort) |>
+  mutate(
+    Tumor = str_extract(Specimen, "_T\\d+") |> str_remove("_"),
+    Tumor = factor(Tumor),
+    cohort = as.factor(cohort)
+  ) |>
+  distinct() |>
+  ggplot(aes(x = PC1, y = PC2, col = Patient, shape = Tumor)) +
+  geom_point(size = 3) +
+  ggtitle("Corrected global samples") +
+  scale_color_manual(values = pcols) +
+  my_theme
+
+gplot
+
+
+ggsave("phosphoCorrectedPCA.pdf", plot = pplot, width = 7, height = 4.5, units = "in", device = cairo_pdf)
+ggsave("globalCorrectedPCA.pdf",  plot = gplot, width = 7, height = 4.5, units = "in", device = cairo_pdf)
 
 ```
 

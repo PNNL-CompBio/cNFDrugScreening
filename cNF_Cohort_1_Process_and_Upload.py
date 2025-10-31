@@ -20,22 +20,22 @@ import synapseclient
 from synapseclient import Folder,File
 
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION - Modify this as needed. Right now, this is set to cohort 2.
 # =============================================================================
 
 # Verbosity
 VERBOSE = False  # set True to see progress logs
 
 # --- Step 1: Inventory / downloads
-PARENT_SYN_ID = "syn51301417"       # Source Synapse folder for raw/normalized files
+PARENT_SYN_ID = "syn51301423"       # Source Synapse folder for raw/normalized files. Change for cohort.
 DOWNLOAD_FILES = True                # If False, inventory only (no file contents)
 DOWNLOAD_DIR = Path("step1_downloads")
 INVENTORY_CSV = Path("step1_inventory_existing_files.csv")
 
 # --- Step 2: inputs
-PROTEOMICS_FILES = ["step1_downloads/Aggregation_report_DiaNN_matrix_exp1.tsv"]
+PROTEOMICS_FILES = ["step1_downloads/Aggregation_report_matrix_exp2.tsv"]
 # PHOSPHO_FILES = ["step1_downloads/DIA_Phospho_FP_Results.tsv"]
-PHOSPHO_SITEID_FILE = "step1_downloads/DIA_Phospho_DiaNN_phosphosites_90_EXP1.tsv"
+PHOSPHO_SITEID_FILE = "step1_downloads/DIA_Phospho_DiaNN_phosphosites_90_EXP2.tsv"
 
 # Metadata
 META_FILES = [
@@ -54,7 +54,7 @@ OUTDIR_SPLIT = Path("step2_split")
 # --- Step 3: packaging/upload
 PACKAGE_DIR = Path("step3_upload_package")
 DATA_ROOT_NAME = "Proteomics Data by Patient"
-UPLOAD_PARENT_SYN_ID = "syn51301417" # destination in Synapse
+UPLOAD_PARENT_SYN_ID = "syn51301423" # destination in Synapse, change for cohort
 ENABLE_SYNAPSE_UPLOAD = True        # If False, do a dry-run (no uploads, use for debugging)
 SYNAPSE_PAT_ENVVAR = "SYNAPSE_AUTH_TOKEN"  # Env var name for Synapse PAT
 
@@ -87,7 +87,7 @@ DATATYPE_BY_KIND = {
 SYN_FIXED_DOWNLOAD_DIR = Path("syn_inputs")
 SYN_ID_METADATA_EXP1   = "syn69920463"
 SYN_ID_METADATA_EXP2   = "syn69920464"
-SYN_ID_PATIENT_INFO    = "syn69931351"
+SYN_ID_PATIENT_INFO    = "syn69931351" #located in cohort 1 folder for both cohorts
 
 # =============================================================================
 # Logging

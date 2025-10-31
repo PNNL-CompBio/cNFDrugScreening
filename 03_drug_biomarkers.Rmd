@@ -16,7 +16,6 @@ library(ggplot2)
 library(dplyr)
 library(tidyr)
 
-
 ```
 
 # Pull processed files from previous markdowns
@@ -24,6 +23,11 @@ library(tidyr)
 We have already run the previous scripts and stored data on Synapse
 
 ```{r pull files}
+Sys.setenv()
+
+source("cNF_helper_code.R")
+traceback()
+
 source('cNF_helper_code.R')
 ##read in drug code
 fits <- readr::read_tsv(synGet('syn69947322')$path)
@@ -32,10 +36,11 @@ fits <- readr::read_tsv(synGet('syn69947322')$path)
 ##read in proteomic data
 glong <- readr::read_csv(synGet('syn70078416')$path)
 plong <- readr::read_csv(synGet('syn70078415')$path)
-
+ 
 
 ##read in transcrniptomic data
 #TODO: process transcritpomic data into long format
+
 
 ```
 
@@ -44,58 +49,335 @@ plong <- readr::read_csv(synGet('syn70078415')$path)
 Do simple correlations to identify putative trends in the data.
 
 ```{r make matrices of proteins}
-library(pheatmap)
-
-shared<-intersect(fits$improve_sample_id,glong$Specimen)
-print(paste('Found',length(shared),'shared samples from',length(unique(fits$improve_sample_id)),'drug experiments and',length(unique(glong$Specimen)),'proteomic experiments'))
-
-glob_dat<-glong|>ungroup()|>
-  subset(Specimen%in%shared)|>
-  dplyr::select(Specimen,Gene,correctedAbundance)|>
-  tidyr::pivot_wider(names_from='Gene',values_from='correctedAbundance',values_fill=0,values_fn=mean)|>
-  tibble::column_to_rownames('Specimen')
-  
-
-phos_dat<-plong|>ungroup()|>
-  subset(Specimen%in%shared)|>
-  dplyr::select(Specimen,site,correctedAbundance)|>
-  tidyr::pivot_wider(names_from='site',values_from='correctedAbundance',values_fill=0,values_fn=mean)|>
-  tibble::column_to_rownames('Specimen')
-
-
-
-## drug data to matrix here
-drug_dat <- fits|>subset(dose_response_metric=='uM_viability') |>
-  dplyr::select(improve_sample_id,improve_drug_id,dose_response_value) |>
-  tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean) |>
-  tibble::column_to_rownames('improve_sample_id')
-
-##first let's plot the most efficatiious
-drug_counts <- fits |>
-  subset(dose_response_metric == 'uM_viability') |>
-  group_by(improve_drug_id)|>
-  distinct()|>
-  summarize(meanResponse = mean(dose_response_value,na.rm=T), nMeasured = n_distinct(improve_sample_id),variability = sd(dose_response_value,na.rm=T))
-
-drug_counts |>
-  arrange(desc(meanResponse)) |>
-  subset(meanResponse < 0.5) |>
-  ggplot(aes(y=meanResponse,x=improve_drug_id,colour=nMeasured,size=variability))+geom_point()+ggtitle("most efficacious drugs")
-
-drug_counts |>
-  arrange(desc(variability))|>
-  subset(variability > 0.15)|>
-  as.data.frame()|>
-  ggplot(aes(y=meanResponse,x=improve_drug_id,colour=nMeasured,size=variability))+geom_point()+ggtitle("most variable drugs")
-
-fulldrugs <- drug_counts|>
-  subset(nMeasured==nrow(drug_dat))
-
-pheatmap(as.matrix(drug_dat[,fulldrugs$improve_drug_id]))
-
-
+# library(pheatmap)
+# 
+# shared<-intersect(fits$improve_sample_id,glong$Specimen)
+# print(paste('Found',length(shared),'shared samples from',length(unique(fits$improve_sample_id)),'drug experiments and',length(unique(glong$Specimen)),'proteomic experiments'))
+# 
+# glob_dat<-glong|>ungroup()|>
+#   subset(Specimen%in%shared)|>
+#   dplyr::select(Specimen,Gene,correctedAbundance)|>
+#   tidyr::pivot_wider(names_from='Gene',values_from='correctedAbundance',values_fill=0,values_fn=mean)|>
+#   tibble::column_to_rownames('Specimen')
+#   
+# 
+# phos_dat<-plong|>ungroup()|>
+#   subset(Specimen%in%shared)|>
+#   dplyr::select(Specimen,site,correctedAbundance)|>
+#   tidyr::pivot_wider(names_from='site',values_from='correctedAbundance',values_fill=0,values_fn=mean)|>
+#   tibble::column_to_rownames('Specimen')
+# 
+# 
+# 
+# ## drug data to matrix here
+# drug_dat <- fits|>subset(dose_response_metric=='uM_viability') |>
+#   dplyr::select(improve_sample_id,improve_drug_id,dose_response_value) |>
+#   tidyr::pivot_wider(names_from='improve_drug_id',values_from='dose_response_value',values_fn=mean) |>
+#   tibble::column_to_rownames('improve_sample_id')
+# 
+# ##first let's plot the most efficatiious
+# drug_counts <- fits |>
+#   subset(dose_response_metric == 'uM_viability') |>
+#   group_by(improve_drug_id)|>
+#   distinct()|>
+#   summarize(meanResponse = mean(dose_response_value,na.rm=T), nMeasured = n_distinct(improve_sample_id),variability = sd(dose_response_value,na.rm=T))
+# 
+# drug_counts |>
+#   arrange(desc(meanResponse)) |>
+#   subset(meanResponse < 0.5) |>
+#   ggplot(aes(y=meanResponse,x=improve_drug_id,colour=nMeasured,size=variability))+geom_point()+ggtitle("most efficacious drugs")
+# 
+# drug_counts |>
+#   arrange(desc(variability))|>
+#   subset(variability > 0.15)|>
+#   as.data.frame()|>
+#   ggplot(aes(y=meanResponse,x=improve_drug_id,colour=nMeasured,size=variability))+geom_point()+ggtitle("most variable drugs")
+# 
+# fulldrugs <- drug_counts|>
+#   subset(nMeasured==nrow(drug_dat))
+# 
+# pheatmap(as.matrix(drug_dat[,fulldrugs$improve_drug_id]))
 
 ```
+#duplcate but saves
+```{r}
+# # ensure an output folder
+# outdir <- "figs"
+# if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+# 
+# shared <- intersect(fits$improve_sample_id, glong$Specimen)
+# message(sprintf("Found %d shared samples from %d drug experiments and %d proteomic experiments",
+#                 length(shared), length(unique(fits$improve_sample_id)), length(unique(glong$Specimen))))
+# 
+# glob_dat <- glong |>
+#   ungroup() |>
+#   subset(Specimen %in% shared) |>
+#   dplyr::select(Specimen, Gene, correctedAbundance) |>
+#   tidyr::pivot_wider(
+#     names_from = "Gene",
+#     values_from = "correctedAbundance",
+#     values_fill = 0,
+#     values_fn = mean
+#   ) |>
+#   tibble::column_to_rownames("Specimen")
+# 
+# phos_dat <- plong |>
+#   ungroup() |>
+#   subset(Specimen %in% shared) |>
+#   dplyr::select(Specimen, site, correctedAbundance) |>
+#   tidyr::pivot_wider(
+#     names_from = "site",
+#     values_from = "correctedAbundance",
+#     values_fill = 0,
+#     values_fn = mean
+#   ) |>
+#   tibble::column_to_rownames("Specimen")
+# 
+# ## drug data to matrix here
+# drug_dat <- fits |>
+#   subset(dose_response_metric == "uM_viability") |>
+#   dplyr::select(improve_sample_id, improve_drug_id, dose_response_value) |>
+#   tidyr::pivot_wider(
+#     names_from  = "improve_drug_id",
+#     values_from = "dose_response_value",
+#     values_fn   = mean
+#   ) |>
+#   tibble::column_to_rownames("improve_sample_id")
+# 
+# ## summarize drugs
+# drug_counts <- fits |>
+#   subset(dose_response_metric == "uM_viability") |>
+#   group_by(improve_drug_id) |>
+#   distinct() |>
+#   summarize(
+#     meanResponse = mean(dose_response_value, na.rm = TRUE),
+#     nMeasured    = n_distinct(improve_sample_id),
+#     variability  = sd(dose_response_value, na.rm = TRUE),
+#     .groups = "drop"
+#   )
+# 
+# # -------- Plot 1: most efficacious --------
+# p1 <- drug_counts |>
+#   arrange(desc(meanResponse)) |>
+#   subset(meanResponse < 0.5) |>
+#   ggplot(aes(y = meanResponse, x = improve_drug_id, colour = nMeasured, size = variability)) +
+#   geom_point() +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1)  # tilt x labels
+#   ) +
+#   labs(title = "Most efficacious drugs",
+#        y = "Mean cell viability (fraction)",
+#        x = "Drug")
+# 
+# ggsave(file.path("figs/most_efficacious.pdf"), p1, width = 12, height = 8, dpi = 300)
+# 
+# # -------- Plot 2: most variable --------
+# p2 <- drug_counts |>
+#   arrange(desc(variability)) |>
+#   subset(variability > 0.15) |>
+#   as.data.frame() |>
+#   ggplot(aes(y = meanResponse, x = improve_drug_id, colour = nMeasured, size = variability)) +
+#   geom_point() +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1)  # tilt x labels
+#   ) +
+#   labs(title = "Most variable drugs",
+#        y = "Mean cell viability (fraction)",
+#        x = "Drug")
+# 
+# ggsave(file.path("figs/most_variable.pdf"), p2, width = 12, height = 8, dpi = 300)
+# 
+# # -------- Plot 3: heatmap of complete-measurement drugs --------
+# fulldrugs <- drug_counts |>
+#   subset(nMeasured == nrow(drug_dat))
+# 
+# # Save large, rotate column labels, and shrink font to avoid overlap
+# # pheatmap can write directly to a file via the `filename` arg.
+# pheatmap::pheatmap(
+#   as.matrix(drug_dat[, fulldrugs$improve_drug_id, drop = FALSE]),
+#   filename     = file.path(outdir, "drug_heatmap_large.pdf"),
+#   width        = 28,     # inches: large so column labels are readable
+#   height       = 16,
+#   dpi          = 300,
+#   angle_col    = 45,     # rotate column (drug) labels
+#   fontsize_col = 6,      # smaller font for many drugs
+#   cluster_rows = TRUE,
+#   cluster_cols = TRUE,
+#   show_rownames = TRUE,
+#   show_colnames = TRUE
+# )
+# 
+# # Optional: also save a PDF (great for vector zooming)
+# pheatmap::pheatmap(
+#   as.matrix(drug_dat[, fulldrugs$improve_drug_id, drop = FALSE]),
+#   filename     = file.path("figs/drug_heatmap_large.pdf"),
+#   width        = 28,
+#   height       = 16,
+#   angle_col    = 45,
+#   fontsize_col = 6,
+#   cluster_rows = TRUE,
+#   cluster_cols = TRUE,
+#   show_rownames = TRUE,
+#   show_colnames = TRUE
+# )
+# 
+
+```
+
+
+```{r}
+# ensure an output folder
+
+outdir <- "figs"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+shared <- intersect(fits$improve_sample_id, glong$Specimen)
+message(sprintf("Found %d shared samples from %d drug experiments and %d proteomic experiments",
+length(shared), length(unique(fits$improve_sample_id)), length(unique(glong$Specimen))))
+
+glob_dat <- glong |>
+ungroup() |>
+subset(Specimen %in% shared) |>
+dplyr::select(Specimen, Gene, correctedAbundance) |>
+tidyr::pivot_wider(
+names_from = "Gene",
+values_from = "correctedAbundance",
+values_fill = 0,
+values_fn = mean
+) |>
+tibble::column_to_rownames("Specimen")
+
+phos_dat <- plong |>
+ungroup() |>
+subset(Specimen %in% shared) |>
+dplyr::select(Specimen, site, correctedAbundance) |>
+tidyr::pivot_wider(
+names_from = "site",
+values_from = "correctedAbundance",
+values_fill = 0,
+values_fn = mean
+) |>
+tibble::column_to_rownames("Specimen")
+
+## drug data to matrix here
+
+drug_dat <- fits |>
+subset(dose_response_metric == "uM_viability") |>
+dplyr::select(improve_sample_id, improve_drug_id, dose_response_value) |>
+tidyr::pivot_wider(
+names_from  = "improve_drug_id",
+values_from = "dose_response_value",
+values_fn   = mean
+) |>
+tibble::column_to_rownames("improve_sample_id")
+
+## summarize drugs
+
+drug_counts <- fits |>
+subset(dose_response_metric == "uM_viability") |>
+group_by(improve_drug_id) |>
+distinct() |>
+summarize(
+meanResponse = mean(dose_response_value, na.rm = TRUE),
+nMeasured    = n_distinct(improve_sample_id),
+variability  = sd(dose_response_value, na.rm = TRUE),
+.groups = "drop"
+)
+
+# -------- Plot 1: most efficacious --------
+
+p1 <- drug_counts |>
+arrange(desc(meanResponse)) |>
+subset(meanResponse < 0.5) |>
+ggplot(aes(y = meanResponse, x = improve_drug_id, colour = nMeasured, size = variability)) +
+geom_point() +
+theme_minimal() +
+theme(
+axis.text.x = element_text(angle = 45, hjust = 1)  # tilt x labels
+) +
+labs(title = "Most efficacious drugs",
+y = "Mean cell viability (fraction)",
+x = "Drug")
+
+ggsave(file.path("figs/most_efficacious.pdf"), p1, width = 12, height = 8, dpi = 300)
+
+# -------- Plot 2: most variable --------
+
+p2 <- drug_counts |>
+arrange(desc(variability)) |>
+subset(variability > 0.15) |>
+as.data.frame() |>
+ggplot(aes(y = meanResponse, x = improve_drug_id, colour = nMeasured, size = variability)) +
+geom_point() +
+theme_minimal() +
+theme(
+axis.text.x = element_text(angle = 45, hjust = 1)  # tilt x labels
+) +
+labs(title = "Most variable drugs",
+y = "Mean cell viability (fraction)",
+x = "Drug")
+
+ggsave(file.path("figs/most_variable.pdf"), p2, width = 12, height = 8, dpi = 300)
+
+# -------- Plot 3: heatmap of complete-measurement drugs --------
+
+fulldrugs <- drug_counts |>
+subset(nMeasured == nrow(drug_dat))
+
+# Save large, rotate column labels, and shrink font to avoid overlap
+
+# pheatmap can write directly to a file via the `filename` arg.
+
+pheatmap::pheatmap(
+as.matrix(drug_dat[, fulldrugs$improve_drug_id, drop = FALSE]),
+filename     = file.path(outdir, "drug_heatmap_large.pdf"),
+width        = 28,     # inches: large so column labels are readable
+height       = 16,
+dpi          = 300,
+angle_col    = 45,     # rotate column (drug) labels
+fontsize_col = 6,      # smaller font for many drugs
+cluster_rows = TRUE,
+cluster_cols = TRUE,
+show_rownames = TRUE,
+show_colnames = TRUE
+)
+
+# Optional: also save a PDF (great for vector zooming)
+
+pheatmap::pheatmap(
+as.matrix(drug_dat[, fulldrugs$improve_drug_id, drop = FALSE]),
+filename     = file.path("figs/drug_heatmap_large.pdf"),
+width        = 28,
+height       = 16,
+angle_col    = 45,
+fontsize_col = 6,
+cluster_rows = TRUE,
+cluster_cols = TRUE,
+show_rownames = TRUE,
+show_colnames = TRUE
+)
+
+# ---- PRINT plots in the document as well ----
+
+print(p1)
+print(p2)
+
+# Print the heatmap to the document (no filename draws it)
+
+pheatmap::pheatmap(
+as.matrix(drug_dat[, fulldrugs$improve_drug_id, drop = FALSE]),
+angle_col    = 45,
+fontsize_col = 6,
+cluster_rows = TRUE,
+cluster_cols = TRUE,
+show_rownames = TRUE,
+show_colnames = TRUE
+)
+
+```
+
 
 # Basic correlation tests
 
@@ -157,31 +439,624 @@ corsummary<-allcor |> subset(fdr<0.25) |>
    summarize(features=n(),meanCor=mean(cor))
 
 
-corsummary |>
+p_features <- corsummary |>
   subset(features > 1) |>
   ggplot(aes(x = drug,y = features,fill = direction)) + 
     facet_grid(data~.) + 
     geom_bar(position='dodge',stat='identity') +
     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
+ggsave(filename = file.path("figs/cor_features_by_drug.pdf"),
+                plot = p_features, width = 12, height = 6, units = "in")
 
 corsummary |>
   arrange(desc(features)) |>
   subset(features > 100) |>
   dplyr::select(drug,data,direction,features,meanCor)
 
+
+
 ```
 
-Now we have the correlation values. what do we do with the?
-
+Now we have the correlation values. what do we do with them?
 ## Correlation based enrichment
-For each drug, how many terms do we see active? how many kinases?
+Do not run this everytime - it is extremely slow, so its setup to run once and save the data. The next steps load this data.
 ```{r functional enrichment}
-#TODO
+# === Direction-aware leapR enrichment: run "top" (up) and "bottom" (down) separately ===
+# Requires: glob_dat (samples x proteins), phos_dat (samples x phosphosites), fits (drug responses)
+# Outputs:
+#   prot_enrich[[drug]]$top / $bottom
+#   phos_enrich[[drug]]$top / $bottom
+# Optional CSVs in folder "leapR_top_paths/dir_split/"
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(SummarizedExperiment)
 library(leapR)
 
+# ---- choose drugs to run (use your two, or set to a larger list) ----
+# target_drugs <- c("THZ1", "Onalespib")
+target_drugs <- unique(fits$improve_drug_id)
+
+# ---- genesets ----
+data(msigdb); geneset_db <- msigdb
+data(kinasesubstrates)
+
+# ---- helpers ----
+extract_gene_from_site <- function(site_id) {
+  if (is.na(site_id) || site_id == "") return(NA_character_)
+  g <- str_split(as.character(site_id), "[:_\\-\\.]")[[1]][1]
+  toupper(stringr::str_extract(g, "^[A-Za-z0-9]+"))
+}
+
+# Correlate response vector vs each feature column (Spearman)
+col_spearman <- function(vec, mat) {
+  shared <- intersect(names(vec), rownames(mat))
+  if (length(shared) < 3) return(setNames(rep(NA_real_, ncol(mat)), colnames(mat)))
+  v <- vec[shared]
+  m <- as.matrix(mat[shared, , drop = FALSE])
+  apply(m, 2, function(col) {
+    if (all(is.na(col))) return(NA_real_)
+    if (sd(col, na.rm = TRUE) == 0 || sd(v, na.rm = TRUE) == 0) return(NA_real_)
+    suppressWarnings(cor(v, col, method = "spearman", use = "pairwise.complete.obs"))
+  })
+}
+
+# Build one-column SE; column name must match primary_columns
+build_se_from_corvec <- function(cor_named_vec, features_all, col_label, map_to_gene = NULL, assay_label = "proteomics") {
+  v <- rep(NA_real_, length(features_all)); names(v) <- features_all
+  common <- intersect(names(cor_named_vec), features_all)
+  v[common] <- cor_named_vec[common]
+  mat <- matrix(v, nrow = length(v), ncol = 1, dimnames = list(features_all, col_label))
+  rd  <- DataFrame(feature_id = features_all)
+  rd$hgnc_id <- if (is.null(map_to_gene)) features_all else map_to_gene[features_all]
+  se <- SummarizedExperiment(assays = list(values = mat), rowData = rd, colData = DataFrame(sample = col_label))
+  assayNames(se) <- assay_label
+  se
+}
+
+safe_leapr <- function(...) tryCatch(leapR::leapR(...), error = function(e) { message("[leapR] ", conditionMessage(e)); NULL })
+
+# ---- feature and mapping vectors ----
+prot_features <- colnames(glob_dat)
+phos_features <- colnames(phos_dat)
+phos_to_gene  <- setNames(vapply(phos_features, extract_gene_from_site, FUN.VALUE = character(1)),
+                          phos_features)
+
+# ---- results containers ----
+prot_enrich <- list()
+phos_enrich <- list()
+
+# optional: write CSVs?
+write_csvs <- TRUE
+outdir <- "leapR_top_paths/dir_split"
+if (write_csvs && !dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+# ---- per-drug workflow ----
+for (drug in target_drugs) {
+  message("=== ", drug, " ===")
+  # build response vector (mean per sample if repeats)
+  dv <- fits %>%
+    filter(improve_drug_id == !!drug, dose_response_metric == "uM_viability") %>%
+    group_by(improve_sample_id) %>% summarize(resp = mean(dose_response_value, na.rm = TRUE), .groups = "drop")
+  if (nrow(dv) == 0) { message("  no response rows; skipping"); next }
+  dv_vec <- setNames(dv$resp, dv$improve_sample_id)
+
+  # correlations
+  prot_cor <- col_spearman(dv_vec, glob_dat)
+  phos_cor <- col_spearman(dv_vec, phos_dat)
+
+  # split by sign
+  prot_pos <- prot_cor[!is.na(prot_cor) & prot_cor > 0]
+  prot_neg <- prot_cor[!is.na(prot_cor) & prot_cor < 0]
+  phos_pos <- phos_cor[!is.na(phos_cor) & phos_cor > 0]
+  phos_neg <- phos_cor[!is.na(phos_cor) & phos_cor < 0]
+
+  # ---- global: TOP (positives as-is), BOTTOM (negatives flipped so they rank to the top) ----
+  prot_enrich[[drug]] <- list(top = NULL, bottom = NULL)
+
+  # TOP
+  if (length(prot_pos) >= 5) {
+    se_prot_top <- build_se_from_corvec(prot_pos, prot_features, col_label = paste0(drug, "_TOP"), assay_label = "proteomics")
+    prot_top <- safe_leapr(geneset = geneset_db, enrichment_method = "enrichment_in_order",
+                           eset = se_prot_top, assay_name = "proteomics",
+                           primary_columns = paste0(drug, "_TOP"))
+    prot_enrich[[drug]]$top <- prot_top
+    if (write_csvs && !is.null(prot_top)) {
+      write.csv(as.data.frame(prot_top), file = file.path(outdir, paste0(drug, "_global_TOP.csv")))
+    }
+  } else message("  PROT top: too few positive features (", length(prot_pos), ")")
+
+  # BOTTOM (flip sign so more negative = larger positive rank)
+  if (length(prot_neg) >= 5) {
+    se_prot_bot <- build_se_from_corvec(-prot_neg, prot_features, col_label = paste0(drug, "_BOTTOM"), assay_label = "proteomics")
+    prot_bot <- safe_leapr(geneset = geneset_db, enrichment_method = "enrichment_in_order",
+                           eset = se_prot_bot, assay_name = "proteomics",
+                           primary_columns = paste0(drug, "_BOTTOM"))
+    prot_enrich[[drug]]$bottom <- prot_bot
+    if (write_csvs && !is.null(prot_bot)) {
+      write.csv(as.data.frame(prot_bot), file = file.path(outdir, paste0(drug, "_global_BOTTOM.csv")))
+    }
+  } else message("  PROT bottom: too few negative features (", length(prot_neg), ")")
+
+  # ---- PHOSPHO: TOP/BOTTOM for pathways (gene mapping via hgnc_id) ----
+  phos_enrich[[drug]] <- list(top = NULL, bottom = NULL)
+
+  # TOP
+  if (length(phos_pos) >= 5) {
+    se_phos_top <- build_se_from_corvec(phos_pos, phos_features, col_label = paste0(drug, "_TOP"),
+                                        map_to_gene = phos_to_gene, assay_label = "phosphoproteomics")
+    phos_top <- safe_leapr(geneset = geneset_db, enrichment_method = "enrichment_in_order",
+                           eset = se_phos_top, assay_name = "phosphoproteomics",
+                           primary_columns = paste0(drug, "_TOP"), id_column = "hgnc_id")
+    phos_enrich[[drug]]$top <- phos_top
+    if (write_csvs && !is.null(phos_top)) {
+      write.csv(as.data.frame(phos_top), file = file.path(outdir, paste0(drug, "_phospho_TOP.csv")))
+    }
+  } else message("  PHOS top: too few positive features (", length(phos_pos), ")")
+
+  # BOTTOM (flip)
+  if (length(phos_neg) >= 5) {
+    se_phos_bot <- build_se_from_corvec(-phos_neg, phos_features, col_label = paste0(drug, "_BOTTOM"),
+                                        map_to_gene = phos_to_gene, assay_label = "phosphoproteomics")
+    phos_bot <- safe_leapr(geneset = geneset_db, enrichment_method = "enrichment_in_order",
+                           eset = se_phos_bot, assay_name = "phosphoproteomics",
+                           primary_columns = paste0(drug, "_BOTTOM"), id_column = "hgnc_id")
+    phos_enrich[[drug]]$bottom <- phos_bot
+    if (write_csvs && !is.null(phos_bot)) {
+      write.csv(as.data.frame(phos_bot), file = file.path(outdir, paste0(drug, "_phospho_BOTTOM.csv")))
+    }
+  } else message("  PHOS bottom: too few negative features (", length(phos_neg), ")")
+
+}
+
+# Save all direction-split results for later reuse
+save(prot_enrich, phos_enrich, file = "leapR_enrichment_direction_split.Rdata")
+
+message("Finished direction-aware enrichment. Results in lists prot_enrich / phos_enrich, and CSVs (if enabled).")
+
 
 ```
+
+
+
+For each drug, how many terms do we see active? how many kinases?
+```{r functional enrichment}
+# ==== Load saved enrichment & build summaries (no list-casts, no count()) ====
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(forcats)
+library(stringr)
+library(scales)
+
+# Always load the precomputed enrichment lists here
+load("leapR_enrichment_direction_split.Rdata")
+if (!exists("prot_enrich")) stop("prot_enrich not found in leapR_enrichment_direction_split.Rdata")
+if (!exists("phos_enrich")) stop("phos_enrich not found in leapR_enrichment_direction_split.Rdata")
+
+alpha <- 0.05
+topN  <- 15  # <<< top 15
+dirs  <- c("resistant","sensitive")
+
+# ---------- helpers ----------
+pick_pcol <- function(df) {
+  cols <- colnames(df)
+  if ("BH_pvalue"       %in% cols) return(list(kind="adj", col="BH_pvalue"))
+  if ("SignedBH_pvalue" %in% cols) return(list(kind="adj", col="SignedBH_pvalue"))
+  if ("adj.P.Val"       %in% cols) return(list(kind="adj", col="adj.P.Val"))
+  if ("padj"            %in% cols) return(list(kind="adj", col="padj"))
+  if ("pvalue"          %in% cols) return(list(kind="raw", col="pvalue"))
+  if ("P.Value"         %in% cols) return(list(kind="raw", col="P.Value"))
+  NULL
+}
+
+extract_term_col <- function(df) {
+  cands <- c("term","Term","pathway","Pathway","set","Set","geneset","gene_set","Category")
+  hit <- cands[cands %in% names(df)]
+  if (length(hit)) hit[[1]] else NULL
+}
+
+tidy_one_result <- function(x) {
+  if (is.null(x)) return(tibble(pathway = character(), adj_p = numeric()))
+  df <- as.data.frame(x)
+  if (!nrow(df))  return(tibble(pathway = character(), adj_p = numeric()))
+
+  term_col <- extract_term_col(df)
+  if (is.null(term_col)) {
+    df <- tibble::rownames_to_column(df, "pathway")
+  } else {
+    df <- dplyr::mutate(df, pathway = .data[[term_col]])
+  }
+  df$pathway <- as.character(df$pathway)
+
+  pk <- pick_pcol(df)
+  if (is.null(pk)) return(tibble(pathway = character(), adj_p = numeric()))
+  adj <- if (pk$kind == "adj") df[[pk$col]] else p.adjust(df[[pk$col]], method = "BH")
+
+  tibble(pathway = df$pathway, adj_p = as.numeric(adj)) |>
+    filter(is.finite(adj_p), !is.na(adj_p))
+}
+
+flatten_by_direction <- function(lst, omic_label) {
+  if (!length(lst)) return(tibble())
+  purrr::imap_dfr(lst, function(two, drug) {
+    bind_rows(
+      tidy_one_result(two$top)    |> mutate(direction = "resistant"),
+      tidy_one_result(two$bottom) |> mutate(direction = "sensitive")
+    ) |>
+      mutate(drug = as.character(drug), omic = omic_label)
+  })
+}
+
+# ---------- long-format enrichment and significance filter ----------
+prot_long   <- flatten_by_direction(prot_enrich, "global")
+phos_long   <- flatten_by_direction(phos_enrich, "phospho")
+enrich_long <- bind_rows(prot_long, phos_long) |> as_tibble()
+stopifnot(all(c("pathway","adj_p","direction","drug","omic") %in% names(enrich_long)))
+
+enrich_sig <- enrich_long |>
+  filter(is.finite(adj_p), !is.na(adj_p), adj_p < alpha)
+
+if (nrow(enrich_sig) == 0) {
+  message("No significant pathways at FDR < ", alpha, ".")
+  pathway_summary <- tibble()
+  drug_counts     <- tibble()
+} else {
+  pathway_summary <- enrich_sig |>
+    group_by(omic, direction, pathway) |>
+    summarise(n_drugs = n_distinct(drug), .groups = "drop") |>
+    arrange(desc(n_drugs))
+
+  all_drugs <- sort(unique(enrich_long$drug))
+  drug_counts <- enrich_sig |>
+    group_by(drug, direction) |>
+    summarise(n_pathways = n_distinct(pathway), .groups = "drop") |>
+    complete(drug = all_drugs, direction = dirs, fill = list(n_pathways = 0L)) |>
+    arrange(drug, direction)
+
+  # ---------- summary figures ----------
+  dir.create("figs", showWarnings = FALSE)
+
+  reorder_within <- function(x, by, within, sep = "___") {
+    x2 <- paste(x, within, sep = sep); stats::reorder(x2, by)
+  }
+  scale_y_reordered_wrap <- function(width = 32, sep = "___") {
+    ggplot2::scale_y_discrete(
+      labels = function(x) stringr::str_wrap(gsub(paste0(sep, ".*$"), "", x), width = width)
+    )
+  }
+
+  pathway_summary_top <- pathway_summary |>
+    group_by(omic, direction) |>
+    slice_max(order_by = n_drugs, n = topN, with_ties = FALSE) |>
+    ungroup() |>
+    mutate(pathway_in_omic = reorder_within(pathway, n_drugs, omic))
+
+  p_pathways <- ggplot(pathway_summary_top,
+                       aes(y = pathway_in_omic, x = n_drugs, fill = direction)) +
+    geom_col(position = position_dodge(width = 0.85), width = 0.85) +
+    facet_wrap(~ omic, scales = "free_y") +
+    scale_y_reordered_wrap(width = 36) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.05))) +
+    labs(title = paste0("Top ", topN, " pathways enriched across drugs"),
+         y = "Pathway", x = "# Drugs") +
+    theme_minimal(base_size = 11) +
+    theme(
+      legend.position    = "top",
+      strip.text         = element_text(face = "bold"),
+      axis.text.y        = element_text(size = 7),
+      panel.grid.major.x = element_blank(),
+      plot.margin        = margin(5.5, 30, 5.5, 5.5)
+    ) +
+    coord_cartesian(clip = "off")
+
+  # --- PDF saves (summary figs) ---
+  ggsave("figs/pathways_across_drugs_top15.pdf", p_pathways,
+         width = 12, height = 10, units = "in", device = cairo_pdf)
+  print(p_pathways)
+
+  drug_counts_full <- drug_counts |>
+    group_by(drug) |>
+    mutate(total = sum(n_pathways)) |>
+    ungroup() |>
+    mutate(drug = forcats::fct_reorder(drug, total))
+
+  p_counts <- ggplot(drug_counts_full, aes(x = drug, y = n_pathways, fill = direction)) +
+    geom_col(position = position_dodge(width = 0.9), width = 0.85) +
+    labs(title = "Number of enriched pathways per drug",
+         x = "Drug", y = "# Pathways") +
+    theme_minimal(base_size = 11) +
+    theme(
+      legend.position    = "top",
+      axis.text.x        = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6),
+      panel.grid.major.x = element_blank()
+    )
+
+  ggsave("figs/enriched_pathways_per_drug_wide.pdf", p_counts,
+         width = 18, height = 7, units = "in", device = cairo_pdf)
+  print(p_counts)
+}
+
+# ---------- Top-2 most efficacious & most variable drugs ----------
+top2_efficacious <- character(0)
+top2_variable    <- character(0)
+
+if (exists("fits")) {
+  eff_tbl <- fits |>
+    filter(dose_response_metric == "uM_viability") |>
+    group_by(improve_drug_id) |>
+    summarise(
+      meanResponse = mean(dose_response_value, na.rm = TRUE),
+      variability  = sd(dose_response_value,   na.rm = TRUE),
+      nMeasured    = dplyr::n_distinct(improve_sample_id),
+      .groups = "drop"
+    )
+  top2_efficacious <- eff_tbl |>
+    arrange(meanResponse, desc(nMeasured)) |>
+    slice_head(n = 2) |>
+    pull(improve_drug_id)
+  top2_variable <- eff_tbl |>
+    arrange(desc(variability), desc(nMeasured)) |>
+    slice_head(n = 2) |>
+    pull(improve_drug_id)
+} else {
+  some <- unique(enrich_long$drug)
+  top2_efficacious <- head(some, 2)
+  top2_variable    <- head(rev(some), 2)
+}
+
+# ---- Force-include Onalespib in top_interest (case-insensitive) ----
+ona_matches <- unique(enrich_long$drug[grepl("^onalespib$", enrich_long$drug, ignore.case = TRUE)])
+if (length(ona_matches) == 0) ona_matches <- "Onalespib"
+
+top_interest <- unique(c(top2_efficacious, top2_variable, ona_matches))
+message("Top-2 most efficacious (lowest mean viability): ", paste(top2_efficacious, collapse = ", "))
+message("Top-2 most variable (highest SD): ", paste(top2_variable, collapse = ", "))
+message("Force-included: ", paste(ona_matches, collapse = ", "))
+
+# ---------- per-drug pathway barplots: always top 15, star-annotate significance ----------
+pick_pcol_plot <- function(df) {
+  cols <- colnames(df)
+  if ("BH_pvalue" %in% cols)        return("BH_pvalue")
+  if ("SignedBH_pvalue" %in% cols)  return("SignedBH_pvalue")
+  if ("adj.P.Val" %in% cols)        return("adj.P.Val")
+  if ("padj" %in% cols)             return("padj")
+  if ("pvalue" %in% cols)           return("pvalue")
+  if ("P.Value" %in% cols)          return("P.Value")
+  NA_character_
+}
+
+sig_stars <- function(p) dplyr::case_when(
+  is.na(p)  ~ "",
+  p < 0.001 ~ "***",
+  p < 0.01  ~ "**",
+  p < 0.05  ~ "*",
+  TRUE      ~ ""
+)
+
+prep_plot_df <- function(res_df, n = 15) {
+  if (is.null(res_df)) return(NULL)
+  df <- as.data.frame(res_df); if (!nrow(df)) return(NULL)
+  if (!("feature" %in% names(df))) df <- tibble::rownames_to_column(df, "feature")
+  col <- pick_pcol_plot(df); if (is.na(col)) return(NULL)
+
+  # Always compute BH adj p; then take top 15 by smallest adj_p (no significance filter)
+  adj_p <- if (col %in% c("pvalue","P.Value")) p.adjust(df[[col]], method = "BH") else df[[col]]
+
+  df |>
+    mutate(
+      adj_p   = as.numeric(adj_p),
+      score   = -log10(pmax(adj_p, 1e-300)),
+      stars   = sig_stars(adj_p),
+      signif  = !is.na(adj_p) & adj_p < 0.05,
+      feature = stringr::str_wrap(as.character(feature), width = 40)
+    ) |>
+    filter(is.finite(adj_p)) |>
+    arrange(adj_p, desc(score)) |>
+    slice_head(n = n)
+}
+
+plot_bar <- function(df_plot, title_text, label_type) {
+  if (is.null(df_plot) || !nrow(df_plot)) return(NULL)
+  lbl     <- ifelse(label_type == "top", "Resistant pathways", "Sensitive pathways")
+  fillc   <- ifelse(label_type == "top", "#D7191C", "#2C7BB6")
+  star_pad <- 0.15
+
+  ggplot(df_plot, aes(x = reorder(feature, score), y = score)) +
+    geom_col(aes(alpha = signif), fill = fillc, width = 0.85) +
+    scale_alpha_manual(values = c(`FALSE` = 0.5, `TRUE` = 1), guide = "none") +
+    geom_text(aes(y = score + star_pad, label = stars),
+              size = 3, hjust = 0) +
+    coord_flip(clip = "off") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(title = paste0(title_text, ", ", lbl),
+         x = NULL, y = expression(-log[10]("FDR"))) +
+    theme_minimal(base_size = 9) +
+    theme(
+      plot.title  = element_text(size = 11),
+      axis.text.y = element_text(size = 7),
+      axis.text.x = element_text(size = 8),
+      plot.margin = margin(5.5, 30, 5.5, 5.5)
+    )
+}
+
+safelabel <- function(x) gsub("[^A-Za-z0-9_.-]", "_", x)
+
+dir.create("figs", showWarnings = FALSE)
+for (drug in top_interest) {
+  pt <- if (drug %in% names(prot_enrich)) prot_enrich[[drug]]$top    else NULL
+  pb <- if (drug %in% names(prot_enrich)) prot_enrich[[drug]]$bottom else NULL
+  ft <- if (drug %in% names(phos_enrich)) phos_enrich[[drug]]$top    else NULL
+  fb <- if (drug %in% names(phos_enrich)) phos_enrich[[drug]]$bottom else NULL
+
+  p1 <- plot_bar(prep_plot_df(pt, n = 15), paste0(drug, " — global"), "top")
+  p2 <- plot_bar(prep_plot_df(pb, n = 15), paste0(drug, " — global"), "bottom")
+  p3 <- plot_bar(prep_plot_df(ft, n = 15), paste0(drug, " — Phospho"), "top")
+  p4 <- plot_bar(prep_plot_df(fb, n = 15), paste0(drug, " — Phospho"), "bottom")
+
+  if (!is.null(p1)) {
+    ggsave(file.path("figs", paste0("pathways_", safelabel(drug), "_global_resistant_top15.pdf")),
+           p1, width = 7, height = 5, device = cairo_pdf); print(p1)
+  }
+  if (!is.null(p2)) {
+    ggsave(file.path("figs", paste0("pathways_", safelabel(drug), "_global_sensitive_top15.pdf")),
+           p2, width = 7, height = 5, device = cairo_pdf); print(p2)
+  }
+  if (!is.null(p3)) {
+    ggsave(file.path("figs", paste0("pathways_", safelabel(drug), "_phospho_resistant_top15.pdf")),
+           p3, width = 7, height = 5, device = cairo_pdf); print(p3)
+  }
+  if (!is.null(p4)) {
+    ggsave(file.path("figs", paste0("pathways_", safelabel(drug), "_phospho_sensitive_top15.pdf")),
+           p4, width = 7, height = 5, device = cairo_pdf); print(p4)
+  }
+}
+
+
+
+```
+
+
+
+
+# Print siginficant results for all drugs if we want.
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tibble)
+library(rlang)
+
+alpha <- 0.05  # significance threshold
+top_n_to_show <- 15
+
+# Prefer adjusted p if available; fall back to raw and adjust per-run
+pick_pcol <- function(df) {
+  cols <- colnames(df)
+  if ("BH_pvalue" %in% cols)        return(list(kind="adj", col="BH_pvalue"))
+  if ("SignedBH_pvalue" %in% cols)  return(list(kind="adj", col="SignedBH_pvalue"))
+  if ("pvalue" %in% cols)           return(list(kind="raw", col="pvalue"))
+  return(NULL)
+}
+
+prep_plot_df <- function(res_df, n = top_n_to_show) {
+  if (is.null(res_df)) return(NULL)
+  df <- as.data.frame(res_df)
+  if (!nrow(df)) return(NULL)
+
+  pick <- pick_pcol(df)
+  if (is.null(pick)) return(NULL)
+
+  # unify to adj p
+  if (pick$kind == "adj") {
+    df <- df %>% mutate(adj_p = !!sym(pick$col))
+  } else {  # raw p → adjust within this run
+    df <- df %>% mutate(adj_p = p.adjust(!!sym(pick$col), method = "BH"))
+  }
+
+  df %>%
+    rownames_to_column("feature") %>%
+    arrange(adj_p) %>%
+    # keep only significant ones; if none, return empty (caller will message)
+    filter(is.finite(adj_p), !is.na(adj_p), adj_p < alpha) %>%
+    head(n) %>%
+    mutate(score = -log10(pmax(adj_p, 1e-300)))
+}
+
+plot_bar <- function(df_plot, title_text, label_type) {
+  if (is.null(df_plot) || !nrow(df_plot)) {
+    message("  No significant pathways for ", title_text, " (FDR<", alpha, ").")
+    return(NULL)
+  }
+  # Correct labels & colors for uM_viability convention:
+  # TOP  -> resistant (red), BOTTOM -> sensitive (blue)
+  lbl   <- ifelse(label_type == "top", "Resistant pathways", "Sensitive pathways")
+  fillc <- ifelse(label_type == "top", "#D7191C", "#2C7BB6")
+
+  p <- ggplot(df_plot, aes(x = reorder(feature, score), y = score)) +
+    geom_col(fill = fillc) +
+    coord_flip() +
+    labs(title = paste0(title_text, ", ", lbl),
+         x = NULL, y = expression(-log[10]("FDR"))) +
+    theme_minimal(base_size = 9) +
+    theme(
+      plot.title  = element_text(size = 11),
+      axis.text.y = element_text(size = 6),
+      axis.text.x = element_text(size = 8)
+    )
+  print(p); invisible(p)
+}
+
+plot_drug_panels <- function(drug) {
+  message("\n=== ", drug, " ===")
+
+  # global
+  pt <- if (drug %in% names(prot_enrich)) prot_enrich[[drug]]$top else NULL
+  pb <- if (drug %in% names(prot_enrich)) prot_enrich[[drug]]$bottom else NULL
+  plot_bar(prep_plot_df(pt), paste0(drug, ", Global Proteomics"), "top")
+  plot_bar(prep_plot_df(pb), paste0(drug, ", Global Proteomics"), "bottom")
+
+  # Phospho pathways
+  ft <- if (drug %in% names(phos_enrich)) phos_enrich[[drug]]$top else NULL
+  fb <- if (drug %in% names(phos_enrich)) phos_enrich[[drug]]$bottom else NULL
+  plot_bar(prep_plot_df(ft), paste0(drug, ", Phosphoproteomics"), "top")
+  plot_bar(prep_plot_df(fb), paste0(drug, ", Phosphoproteomics"), "bottom")
+}
+
+
+# --- run for your drugs ---
+for (d in target_drugs) plot_drug_panels(d)
+
+```
+
+
+
+
+# Basic drug list
+```{r}
+drug_counts <- fits %>%
+  filter(dose_response_metric == "uM_viability") %>%
+  group_by(improve_drug_id) %>%
+  summarise(
+    n_rows       = dplyr::n(),                          # total rows/measurements
+    n_specimens  = n_distinct(improve_sample_id),       # unique samples tested
+    meanResponse = mean(dose_response_value, na.rm = TRUE),
+    sdResponse   = sd(dose_response_value,   na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_specimens), improve_drug_id)
+
+# Plain list of drugs + total count
+drug_list   <- sort(unique(drug_counts$improve_drug_id))
+n_drugs     <- length(drug_list)
+
+message(sprintf("Total unique drugs: %d", n_drugs))
+print((drug_list))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ## Visualization
 How should we visualize? Here is some older code
@@ -312,6 +1187,21 @@ pimp <- rfFeatures(drug_dat=drug_dat,fdf=pdf,mdf=mdf)
 ```
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Old correlation code, dont run
 
 now we can visualize correlations
@@ -414,6 +1304,8 @@ corsummary|>
   ggplot(aes(x=data,y=features,fill=drug))+
   facet_grid(~direction)+
   geom_bar(position='dodge',stat='identity')
+
+
 
 ```
 
