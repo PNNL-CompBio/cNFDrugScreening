@@ -220,12 +220,10 @@ ggsave('phosphoPCA.pdf')
 ```
 
 Clearly there is a strong batch effect.
-
 ## Normalize golbal proteomics
 Now we can move onto the global data
 
 ### Cohort 1 global
-
 Global proteomics in cohort 1 here. 
 
 ```{r global}
@@ -265,8 +263,6 @@ syn$store(File('log2normMedCenteredGlobal.csv',parentId='syn70078365'))
 
 ### Cohort 2 global
 October 7 we process the second cohort. 
-
-
 ```{r batch 2 global}
 global2<-read.table(syn$get('syn69947352')$path,header=T,sep='\t',quote='"')|>
   tidyr::separate_rows(Genes,sep=';')
@@ -359,7 +355,6 @@ ggsave('globalPCA.pdf')
 ```
 
 
-
 ## Evaluate batch correction
 
 Now we have two separate long tables with metadata, but we would like to combine into a single one and batch correct.We can update this with each cohort. 
@@ -432,62 +427,6 @@ gpcs<-prcomp(t(cgmat))
 
 # plot batch corrected data
 ```{r}
-# pplot <- ppcs$x |>
-#   as.data.frame() |>
-#   dplyr::select(PC1, PC2) |>
-#   tibble::rownames_to_column("fname") |>
-#   left_join(rbind(pfnames1, pfnames2)) |>
-#   left_join(meta) |>
-#   dplyr::select(PC1, PC2, Specimen, Patient, cohort) |>
-#   mutate(
-#     Tumor  = str_extract(Specimen, "_T\\d+") |> str_remove("_"),
-#     Tumor  = factor(Tumor),
-#     cohort = as.factor(cohort)
-#   ) |>
-#   distinct() |>
-#   dplyr::filter(!is.na(Patient), !is.na(Tumor)) |>
-#   ggplot(aes(x = PC1, y = PC2, col = Patient, shape = Tumor)) +
-#   geom_point(size = 3) +
-#   ggtitle("Corrected phospho samples") +
-#   scale_color_manual(values = pcols) +
-#   scale_shape_discrete(na.translate = FALSE) +
-#   theme(
-#     legend.title      = element_text(size = 9),
-#     legend.text       = element_text(size = 7),
-#     legend.key.size   = grid::unit(0.5, "cm"),
-#     legend.spacing.y  = grid::unit(0.2, "cm"),
-#     legend.box.spacing= grid::unit(0.3, "cm")
-#   )
-# 
-# pplot
-# 
-# 
-# gplot <- gpcs$x |>
-#   as.data.frame() |>
-#   dplyr::select(PC1, PC2) |>
-#   tibble::rownames_to_column("fname") |>
-#   left_join(rbind(gfnames1, gfnames2)) |>
-#   left_join(meta) |>
-#   dplyr::select(PC1, PC2, Specimen, Patient, cohort) |>
-#   mutate(
-#     Tumor = str_extract(Specimen, "_T\\d+") |> str_remove("_"),
-#     Tumor = factor(Tumor),
-#     cohort = as.factor(cohort)
-#   ) |>
-#   distinct() |>
-#   ggplot(aes(x = PC1, y = PC2, col = Patient, shape = Tumor)) +
-#   geom_point(size = 3) +
-#   ggtitle("Corrected global samples") +
-#   scale_color_manual(values = pcols) +
-#   theme(
-#     legend.title = element_text(size = 9),
-#     legend.text  = element_text(size = 7),
-#     legend.key.size = unit(0.5, "cm"),
-#     legend.spacing.y = unit(0.2, "cm"),
-#     legend.box.spacing = unit(0.3, "cm")
-#   )
-# 
-# gplot
 
 # Reusable theme: white background + light grey gridlines
 my_theme <- theme_bw() +
@@ -527,8 +466,6 @@ pplot <- ppcs$x |>
   my_theme
 
 pplot
-
-
 
 # --- Corrected global plot (white bg + grey grid) ---
 gplot <- gpcs$x |>
@@ -586,8 +523,5 @@ readr::write_csv(gc_long,file = 'batch12_correctedGlobal.csv')
 
 syn$store(File('batch12_correctedPhospho.csv',parentId = 'syn70078365'))
 syn$store(File('batch12_correctedGlobal.csv',parentId = 'syn70078365'))
-
-
-
 
 ```

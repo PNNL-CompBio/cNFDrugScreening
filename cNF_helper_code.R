@@ -3,6 +3,7 @@
 
 library(synapser)
 synLogin()
+syn <- list(get = synapser::synGet, store = synapser::synStore)
 library(readxl)
 
 
@@ -16,8 +17,8 @@ meta2 <- readxl::read_xlsx(syn$get('syn69920464')$path,sheet='Sheet2')|>
   dplyr::select(Specimen,Patient,Tumor,aliquot='SampleAlias')|>
   mutate(cohort=2)
 
-meta <- rbind(meta1,meta2)
-
+meta <- rbind(meta1,meta2) %>%
+  filter(!(cohort == 1 & aliquot %in% c(2, 5, 6)))
 
 
 pcols <- c(NF0017='steelblue',NF0021='orange2',NF0019='orchid4',
