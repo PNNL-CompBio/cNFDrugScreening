@@ -23,7 +23,7 @@ library(tidyr)
 We have already run the previous scripts and stored data on Synapse
 
 ```{r pull files}
-Sys.setenv(SYNAPSE_AUTH_TOKEN="eyJ0eXAiOiJKV1QiLCJraWQiOiJXN05OOldMSlQ6SjVSSzpMN1RMOlQ3TDc6M1ZYNjpKRU9VOjY0NFI6VTNJWDo1S1oyOjdaQ0s6RlBUSCIsImFsZyI6IlJTMjU2In0.eyJhY2Nlc3MiOnsic2NvcGUiOlsidmlldyIsImRvd25sb2FkIiwibW9kaWZ5Il0sIm9pZGNfY2xhaW1zIjp7fX0sInRva2VuX3R5cGUiOiJQRVJTT05BTF9BQ0NFU1NfVE9LRU4iLCJpc3MiOiJodHRwczovL3JlcG8tcHJvZC5wcm9kLnNhZ2ViYXNlLm9yZy9hdXRoL3YxIiwiYXVkIjoiMCIsIm5iZiI6MTc1ODMyNTgwMiwiaWF0IjoxNzU4MzI1ODAyLCJqdGkiOiIyNjE1MSIsInN1YiI6IjM0NTM5NTUifQ.VcGcVRv0P50Cb6mm7B7hGxzcWdxG4TvMhq8lRZDNEgktWNxdhMA0zacJ1jeOEilfEI-9RRpA7jE2WIM3zjIgYTL-l-UobBMKnvL_gu6itQuf2DyKR6K9OBQJER4cy7N0o6_4qwq5YPflpF6uWuvgAfskuPmQH8Yz9Z80UjeLxFw2yKUJcvtanghAWwFerOEJxxb-PDxHHC6gM_VK-HGGprPQy9_Z33dCZYcmrDbCgV5rWUV5AdTyCHhDBrx4YMw43J2U7os88SPpEEmbvxVpfSFTusOsP1FzYn7ifnpw2t6Ip5ZwLmwShBViShMlTe9X0tgjO5htY5UdXyJBMVK0Qw")
+Sys.setenv()
 
 source("cNF_helper_code.R")
 traceback()
@@ -303,7 +303,7 @@ library(leapR)
 target_drugs <- unique(fits$improve_drug_id)
 
 # ---- genesets ----
-data(msigdb); geneset_db <- msigdb   # or ncipid
+data(msigdb); geneset_db <- msigdb
 data(kinasesubstrates)
 
 # ---- helpers ----
@@ -716,10 +716,10 @@ for (drug in top_interest) {
   ft <- if (drug %in% names(phos_enrich)) phos_enrich[[drug]]$top    else NULL
   fb <- if (drug %in% names(phos_enrich)) phos_enrich[[drug]]$bottom else NULL
 
-  p1 <- plot_bar(prep_plot_df(pt, n = 15), paste0(drug, " - global"), "top")
-  p2 <- plot_bar(prep_plot_df(pb, n = 15), paste0(drug, " - global"), "bottom")
-  p3 <- plot_bar(prep_plot_df(ft, n = 15), paste0(drug, " - Phospho"), "top")
-  p4 <- plot_bar(prep_plot_df(fb, n = 15), paste0(drug, " - Phospho"), "bottom")
+  p1 <- plot_bar(prep_plot_df(pt, n = 15), paste0(drug, " — global"), "top")
+  p2 <- plot_bar(prep_plot_df(pb, n = 15), paste0(drug, " — global"), "bottom")
+  p3 <- plot_bar(prep_plot_df(ft, n = 15), paste0(drug, " — Phospho"), "top")
+  p4 <- plot_bar(prep_plot_df(fb, n = 15), paste0(drug, " — Phospho"), "bottom")
 
   if (!is.null(p1)) {
     ggsave(file.path("figs", paste0("pathways_", safelabel(drug), "_global_resistant_top15.pdf")),
