@@ -1,0 +1,114 @@
+---
+title: "run_analyze_modality_and_enrichment"
+author: "JJ"
+date: "2025-11-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+source("cNF_helper_code.R")
+source("03_analyze_modality_correlations.R")
+source("04_leapr_biomarker.R")
+```
+
+
+```{r}
+
+drugs <- readr::read_tsv(synGet("syn69947322")$path)
+
+#RNA 
+rlong <- readr::read_csv(synGet('syn71333780')$path)
+#Global
+glong <- readr::read_csv(synGet('syn70078416')$path)
+#Phospho
+plong <- readr::read_csv(synGet('syn70078415')$path)
+
+corr_rna <- analyze_modality(
+  fits        = drugs,            
+  df_long     = rlong,           
+  sample_col  = "Specimen",
+  feature_col = "feature_id",
+  value_col   = "correctedAbundance",
+  metric      = "uM_viability",
+  heatmap_filename = "rna_drug_heatmap_large_viability.pdf",
+  outdir = "new_figs"
+)
+
+corr_global <- analyze_modality(
+  fits        = drugs,            
+  df_long     = glong,           
+  sample_col  = "Specimen",
+  feature_col = "Gene",
+  value_col   = "correctedAbundance",
+  metric      = "uM_viability",
+  heatmap_filename = "global_drug_heatmap_large_viability.pdf",
+  outdir = "new_figs"
+)
+
+corr_phospho <- analyze_modality(
+  fits        = drugs,            # syn69947322 TSV already read
+  df_long     = plong,           # your RNA or proteo/phospho long table
+  sample_col  = "Specimen",
+  feature_col = "site",
+  value_col   = "correctedAbundance",
+  metric      = "uM_viability",
+  heatmap_filename = "phospho_drug_heatmap_large_viability.pdf",
+  outdir = "new_figs"
+)
+
+```
+
+
+```{r warning=FALSE}
+
+res_bio_rna <- run_leapr_directional_one_cached(
+  drugs        = drugs,
+  df_long      = rlong,
+  sample_col   = "Specimen",
+  feature_col  = "feature_id",
+  value_col    = "correctedAbundance",
+  omic_label   = "rna",
+  cache_path   = "leapR_RNA_krbpaths_enrichment_direction_split.Rdata",
+  write_csvs   = TRUE,
+  always_rerun = FALSE,
+  test_one     = FALSE,
+  geneset_name = "krbpaths"
+)
+
+
+res_bio_global <- run_leapr_directional_one_cached(
+  drugs        = drugs,
+  df_long      = glong,
+  sample_col   = "Specimen",
+  feature_col  = "Gene",
+  value_col    = "correctedAbundance",
+  omic_label   = "global",
+  cache_path   = "leapR_Global_krbpaths_enrichment_direction_split.Rdata",
+  write_csvs   = TRUE,
+  always_rerun = FALSE,
+  test_one     = FALSE,
+  geneset_name = "krbpaths"
+)
+
+
+res_bio_phospho <- run_leapr_directional_one_cached(
+  drugs        = drugs,
+  df_long      = plong,
+  sample_col   = "Specimen",
+  feature_col  = "site",
+  value_col    = "correctedAbundance",
+  omic_label   = "phospho",
+  cache_path   = "leapR_Phospho_kinasesubstrates_enrichment_direction_split.Rdata",
+  write_csvs   = TRUE,
+  always_rerun = FALSE,
+  test_one     = FALSE,
+  geneset_name = "kinasesubstrates"
+)
+
+
+
+
+```
