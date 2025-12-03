@@ -17,7 +17,6 @@ suppressPackageStartupMessages({
 })
 
 # Small helpers
-
 modified_zscore <- function(x, na.rm = TRUE) {
   m  <- suppressWarnings(stats::median(x, na.rm = na.rm))
   md <- suppressWarnings(stats::mad(x, constant = 1, na.rm = na.rm))
@@ -55,7 +54,6 @@ make_dropper <- function(substrings) {
 }
 
 # Functions to clean up irregular names
-
 basename_only   <- function(x) sub("^.*[\\\\/]", "", x)
 basename_no_ext <- function(x) sub("\\.[^.]+$", "", basename_only(x))
 
@@ -121,7 +119,6 @@ parse_rna_header_triplet <- function(fnames) {
 }
 
 # Functions to get data from Synapse
-
 read_wide_from_synapse <- function(syn, syn_id) {
   message(" Reading Synapse file: ", syn_id)
   df <- read.table(
@@ -179,8 +176,9 @@ parse_fnames <- function(fnames, aliquot_field_index, cohort) {
   out
 }
 
-# -------------------------- Feature ID builders ------------------------------
-
+#####
+#Feature ID builders
+#####
 build_phospho_ids <- function(df) {
   lsite <- tolower(df$Residue)
   paste0(df$`Gene.Names`, "-", df$Residue, df$Site, lsite)
@@ -587,9 +585,9 @@ perform_uploads <- function(paths, syn, parent_id) {
   message("Uploads complete.")
 }
 
-
-
-# ------------------------------- Main entry ----------------------------------
+#####
+# Main entry
+#####
 # This is how we call the function / pipeline
 
 run_modality <- function(
@@ -672,7 +670,7 @@ run_modality <- function(
       }
     }
 
-    # ---- Combine (INTERSECTION) & pre-QC ---------------------------------------
+    # Combine & pre-QC
     message("--------------------------------------------------")
     se_combined  <- combine_batches_intersection(se_list)
 
@@ -688,7 +686,7 @@ run_modality <- function(
       upload_queue <- c(upload_queue, pre_pca_pdf, pre_hist_pdf)
     }
 
-    # ---- Optional ComBat (batch-only) ------------------------------------------
+    # ComBat
     if (isTRUE(do_batch_correct)) {
       message("--------------------------------------------------")
       se_post <- combat_by_cohort(se_combined)
@@ -702,7 +700,7 @@ run_modality <- function(
       post_title  <- paste0("Combined ", modality, " samples (no ComBat)")
     }
 
-    # ---- Exports ----------------------------------------------------------------
+    # Exports
     message(" Building long tables")
     long_pre  <- se_to_long(se_combined,  modality) |>
       dplyr::filter(is.finite(correctedAbundance))
@@ -716,7 +714,7 @@ run_modality <- function(
       upload_queue <- c(upload_queue, path_pre, path_post)
     }
 
-    # ---- Post (either ComBat or not) QC ----------------------------------------
+    # Post ComBat/QC
     message(" Post-QC plots (PCA & histogram)")
     pc_df  <- pca_df_present_in_all(se_post)
     gpca   <- plot_pca(pc_df, post_title, pcols = pcols)
@@ -729,7 +727,7 @@ run_modality <- function(
       upload_queue <- c(upload_queue, post_pca_pdf, post_hist_pdf)
     }
 
-    # ---- Pack results for return ------------------------------------------------
+    # Pack results for return
     results <- list(
       se_batches     = se_list,
       se_combined    = se_combined,
@@ -744,7 +742,7 @@ run_modality <- function(
       files          = if (write_outputs) list(queued = upload_queue) else list()
     )
 
-    # ---- FINAL STEP: Uploads ----------------------------------------------------
+    # FINAL STEP: Uploads
     if (write_outputs && !is.null(upload_parent_id)) {
       perform_uploads(upload_queue, syn, upload_parent_id)
     } else if (!write_outputs) {

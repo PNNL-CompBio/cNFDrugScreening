@@ -13,12 +13,9 @@ dir.create("figs", showWarnings = FALSE)
 # Helpers
 
 make_feature_matrix <- function(df_long, shared_ids, sample_col, feature_col, value_col) {
-  # Strict cleaning: trim to character, drop NA/blank IDs, then pivot
   df <- df_long %>%
     ungroup() %>%
-    # keep only shared sample IDs first (as before)
     dplyr::filter(.data[[sample_col]] %in% shared_ids) %>%
-    # coerce and trim IDs
     mutate(
       !!sample_col  := trimws(as.character(.data[[sample_col]])),
       !!feature_col := trimws(as.character(.data[[feature_col]]))
@@ -27,8 +24,6 @@ make_feature_matrix <- function(df_long, shared_ids, sample_col, feature_col, va
   # Drop rows with NA/blank sample/feature IDs
   bad_sample  <- is.na(df[[sample_col]])  | df[[sample_col]]  == ""
   bad_feature <- is.na(df[[feature_col]]) | df[[feature_col]] == ""
-  if (any(bad_sample))  message("[make_feature_matrix] Dropping ", sum(bad_sample),  " rows with NA/blank ", sample_col)
-  if (any(bad_feature)) message("[make_feature_matrix] Dropping ", sum(bad_feature), " rows with NA/blank ", feature_col)
   df <- df[!(bad_sample | bad_feature), , drop = FALSE]
 
   if (!nrow(df)) {
@@ -48,7 +43,6 @@ make_feature_matrix <- function(df_long, shared_ids, sample_col, feature_col, va
     ) %>%
     as.data.frame(check.names = FALSE)
 
-  # Guard against NA/blank rownames after pivot
   rn <- wide[[sample_col]]
   bad_rn <- is.na(rn) | rn == ""
   if (any(bad_rn)) {
@@ -63,7 +57,7 @@ make_feature_matrix <- function(df_long, shared_ids, sample_col, feature_col, va
     return(out)
   }
 
-  # Finalize rownames (must be unique, non-empty)
+  # Finalize rownames
   rownames(wide) <- make.unique(as.character(rn), sep = "_dup")
   wide[[sample_col]] <- NULL
   wide
@@ -200,22 +194,20 @@ summarize_correlated_features <- function(cor_tbl, fdr_thresh = 0.25, outdir = "
 # ---------------------------
 # Main wrapper
 # ---------------------------
-# Returns: list(drug_mat, feat_mat, shared_ids, cor_tbl, cor_summary, cor_plot, drug_summary)
 analyze_modality <- function(
     fits,
     df_long,
     sample_col,        # e.g., "Specimen"
     feature_col,       # e.g., "feature_id" | "Gene" | "site"
     value_col,         # e.g., "correctedAbundance"
-    metric = "uM_viability",
+    metric = "uM_viability",    # Or fit_auc
     outdir = "figs",
     heatmap_filename = "drug_heatmap_large.pdf",
     fdr_thresh = 0.25
 ) {
-  # Pre-intersection like original (all metrics)
+
   shared_ids <- base::intersect(unique(fits$improve_sample_id), unique(df_long[[sample_col]]))
 
-  # Feature matrix over shared IDs
   feat_mat <- make_feature_matrix(
     df_long = df_long,
     shared_ids = shared_ids,
@@ -224,7 +216,7 @@ analyze_modality <- function(
     value_col = value_col
   )
 
-  # Drug matrix for the exact metric (no normalization/fallbacks)
+  # Drug matrix for the metric
   drug_mat <- make_drug_matrix(
     fits        = fits,
     metric      = metric,
@@ -234,7 +226,7 @@ analyze_modality <- function(
     metric_col  = "dose_response_metric"
   )
 
-  # Summaries & heatmap (original style)
+  # Summaries & heatmap
   dsum <- summarize_drugs(
     fits, metric = metric, metric_col = "dose_response_metric", outdir = outdir
   )
@@ -257,7 +249,7 @@ analyze_modality <- function(
     }
   }
 
-  # Correlations (only if overlap)
+  # Correlations
   shared_after <- base::intersect(rownames(drug_mat), rownames(feat_mat))
   cor_tbl <- if (length(shared_after) > 0L) {
     compute_cors(drug_mat, feat_mat, shared_samples = shared_after)
