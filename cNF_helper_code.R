@@ -6,7 +6,8 @@ library(synapser)
 synLogin()
 syn <- list(get = synapser::synGet, store = synapser::synStore)
 library(readxl)
-
+library(tidyr)
+library(dplyr)
 
 meta1 <- readxl::read_xlsx(syn$get('syn65595365')$path) |>
   tidyr::separate(Specimen,into=c('Patient','Tumor'),sep='_',remove = FALSE)|>

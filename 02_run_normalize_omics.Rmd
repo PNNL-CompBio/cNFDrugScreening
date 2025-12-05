@@ -48,9 +48,9 @@ source("02_normalize_batchcorrect_omics.R")
 # - do_batch_correct : TRUE = ComBat by cohort; FALSE = skip (adds *_noBatchCorrect).
 #
 # Per-modality normalization
-# - phospho : 0→NA → drop >50% missing → log2(x+0.01) → per-sample modified z.
-# - global  : log2(x) → per-sample modified z.
-# - rna     : drop >50% missing → log2(TPM+1) → per-sample modified z.
+# - phospho : 0 toNA to drop >50% missing to log2(x+0.01) to per-sample modified z.
+# - global  : log2(x) to per-sample modified z.
+# - rna     : drop >50% missing to log2(TPM+1) to per-sample modified z.
 #
 # Returns (list)
 # - se_batches : per-batch normalized SEs.
@@ -100,7 +100,7 @@ phospho <- run_modality(
   upload_parent_id = "syn70078365",
   pcols            = pcols,
   write_outputs    = FALSE,
-  save_basename    = "Phospho_batch_corrected",
+  save_basename    = "phospho_batch12_corrected",
   do_batch_correct = TRUE
 )
 
@@ -121,7 +121,7 @@ global <- run_modality(
   upload_parent_id = "syn70078365",
   pcols            = pcols,
   write_outputs    = FALSE,
-  save_basename    = "Global_batch_corrected",
+  save_basename    = "global_batch12_corrected",
   do_batch_correct = TRUE
 )
 
@@ -143,9 +143,8 @@ rna <- run_modality(
   upload_parent_id = "syn71099587",
   pcols            = pcols,
   write_outputs    = FALSE,
-  save_basename    = "RNA_Matrix_no_batch_correct",
+  save_basename    = "RNA_12_no_batch_correct",
   do_batch_correct = FALSE      #Note this is set to false right now. Not needed for RNA
 )
-
 
 ```
