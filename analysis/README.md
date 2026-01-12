@@ -1,3 +1,19 @@
+
+
+
+# cNF multi-omics analysis pipeline overview
+Purpose: Reference for running the cNF analysis end-to-end and understanding what each stage produces.  
+  
+- Run order: Lists the recommended notebook/script sequence and what each file sources (dependencies).  
+  
+- Data processing: Summarizes cohort-wise preprocessing, normalization, and ComBat batch correction for RNA, global proteomics and phosphoproteomics.  
+  
+- Exploratory outputs: Describes the PCA figures generated from batch-corrected data (global + phospho).  
+  
+- Biomarker discovery: Outlines how drug response matrices and omics feature matrices are constructed, filtered to shared samples, and correlated.  
+  
+- Pathway interpretation: Summarizes direction-aware enrichment (leapR / GSEA) and the key plots produced across drugs, modalities, and metrics.  
+  
 ## Quick run order (and what each file sources)
 
 1) **01_run_normalize_omics.Rmd**  
@@ -13,8 +29,7 @@
    - LeapR pathway enrichment and plots for all.
   
 
-
-# Normalized Global / Phosphoproteomics Data for Clustering via PCA
+## Normalized Global / Phosphoproteomics Data for Clustering via PCA
 
 The datasets analyzed in this study included both global proteomics and phosphoproteomics
 measurements collected from two experimental cohorts of cNF (cutaneous neurofibroma) organoid
@@ -56,7 +71,7 @@ divergence. The improved alignment indicates that batch effects were successfull
 corrected data provide a more reliable basis for downstream analyses of patient- and tumor-specific
 proteomic signatures.
 
-## Biomarker Evaluation using Batch-Corrected Global / Phosphoproteomics Data
+### Biomarker Evaluation using Batch-Corrected Global / Phosphoproteomics Data
 
 For this biomarker evaluation analysis, we brought together four different data types collected on
 the same patient-derived samples:
@@ -318,7 +333,7 @@ samples suitable for correlation and biomarker discovery analyses.
 - Zanzalintinib
 </details>
 
-## Exploratory Analysis of Drug Responses
+### Exploratory Analysis of Drug Responses
 
 We performed initial exploration of the drug dataset to understand variability and efficacy across
 the compound panel.
@@ -427,7 +442,7 @@ relies on inter-patient heterogeneity; without it, even strong biological effect
 robustly to specific pathways. This explains why Onalespib yields few significant pathways despite
 its overall potency.
 
-## RNA-Seq / Differential Expression Analysis / Gene Set Enrichment
+### RNA-Seq / Differential Expression Analysis / Gene Set Enrichment
 
 Samples and preprocessing.
 RNA-seq quantifications (Salmon gene-level quant.genes.sf) were retrieved for two conditions from
