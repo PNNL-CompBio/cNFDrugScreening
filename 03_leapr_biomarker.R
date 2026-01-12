@@ -1,4 +1,39 @@
-# leapr_biomarker.R
+# ---------------------------------------------------------------------------
+# 03_leapr_biomarker.R
+# ---------------------------------------------------------------------------
+# Purpose
+# - For each drug, correlate drug response (uM_viability) with omics features across
+#   samples, then use leapR to find enriched pathways/genesets among:
+#     * TOP    = features positively correlated with viability (more resistant)
+#     * BOTTOM = features negatively correlated with viability (more sensitive)
+#
+# Main entry
+# - run_leapr_directional_one_cached(drugs, df_long, sample_col, feature_col, value_col, omic_label, cache_path, ...)
+#
+# Inputs
+# - drugs: long drug-response table with improve_drug_id, improve_sample_id,
+#          dose_response_metric, dose_response_value
+# - df_long: long omics table (sample/feature/value columns)
+# - sample_col / feature_col / value_col: column names in df_long that identify
+#          the sample ID, feature ID, and numeric measurement
+# - omic_label: label used for reporting/assay naming (e.g., "global", "rna", "phospho")
+# - cache_path: .RData file path used to save/load results (skips recompute unless always_rerun=TRUE)
+#
+# Options
+# - geneset_name / geneset_object: choose the leapR geneset DB (defaults depend on omic_label)
+# - min_features: minimum number of correlated features required to run leapR for TOP/BOTTOM
+# - write_csvs: write per-drug leapR tables to CSV
+# - test_one: run only the first drug - make sure things are actually working.
+#
+# Outputs
+# - Cached results saved to cache_path (if provided)
+# - Optional CSVs: leapR_top_paths/dir_split/*_{TOP|BOTTOM}.csv (if write_csvs=TRUE)
+# - Plots: save_leapr_plots() writes pathway barplots to figs/pathways_*.pdf
+#
+# Returns
+# - Named list by drug: res_list[[drug]]$top and res_list[[drug]]$bottom (leapR result tables)
+# ---------------------------------------------------------------------------
+
 
 suppressPackageStartupMessages({
   library(dplyr)
@@ -219,19 +254,21 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 # -----------------------------
 # Main
 # -----------------------------
-run_leapr_directional_one_cached <- function(drugs,
-                                             df_long,
-                                             sample_col,
-                                             feature_col,
-                                             value_col,
-                                             omic_label,
-                                             cache_path,
-                                             write_csvs     = FALSE,
-                                             always_rerun   = FALSE,
-                                             min_features   = 5,
-                                             test_one       = FALSE,
-                                             geneset_name   = NULL,
-                                             geneset_object = NULL) {
+run_leapr_directional_one_cached <- function(
+    drugs,                 # Character vector of drugs to test (IDs/names used by your fits/model)
+    df_long,               # Long-format omics table (one row per sample x feature)
+    sample_col,            # Column name in df_long containing sample IDs
+    feature_col,           # Column name in df_long containing feature IDs (e.g., gene/site)
+    value_col,             # Column name in df_long containing numeric values to analyze
+    omic_label,            # Short label for this modality (used in logs/output names), e.g. "RNA"
+    cache_path,            # File path to cache (read/write) computed results
+    write_csvs     = FALSE,# If TRUE, write result/intermediate CSVs to disk
+    always_rerun   = FALSE,# If TRUE, ignore cache and recompute even if cache exists
+    min_features   = 5,    # Minimum # of features required to run; otherwise skip/return early
+    test_one       = FALSE,# If TRUE, run a single test case (e.g., first drug) for debugging
+    geneset_name   = NULL, # Optional geneset label (used for naming outputs/plot titles)
+    geneset_object = NULL  # Optional geneset definition (e.g., character vector) to filter features
+  ) {
 
   # cache check! If the cached value exists, stop there.
   if (!always_rerun && is.character(cache_path) && nzchar(cache_path) && file.exists(cache_path)) {
@@ -431,37 +468,87 @@ run_leapr_directional_one_cached <- function(drugs,
 # -----------------------------
 # Plot and save using leapR builtin plotter
 # -----------------------------
-save_leapr_plots <- function(res_list, omic_label, top_n = 15) {
+save_leapr_plots <- function(
+    res_list,
+    omic_label,
+    top_n = 15,
+    drugs = NULL,            # NULL = plot all drugs in res_list; otherwise character vector of drug IDs/names (case-insensitive)
+    outdir = "figs"          # output directory for PDFs
+) {
   if (!length(res_list)) return(invisible(NULL))
-  dir.create("figs", showWarnings = FALSE)
+  dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
   safelabel <- function(x) gsub("[^A-Za-z0-9_.-]", "_", x)
 
-  for (drug in names(res_list)) {
+  all_drugs <- names(res_list)
+  if (!length(all_drugs)) {
+    message("[save_leapr_plots] res_list has no named drug entries.")
+    return(invisible(NULL))
+  }
+
+  # Case-insensitive lookup table: UPPER(drug) -> original name in res_list
+  key_upper <- toupper(all_drugs)
+  drug_map  <- stats::setNames(all_drugs, key_upper)
+
+  # Decide which drugs to plot
+  if (is.null(drugs)) {
+    plot_drugs <- all_drugs
+  } else {
+    req <- as.character(drugs)
+    req_upper <- toupper(req)
+
+    found_upper <- intersect(req_upper, names(drug_map))
+    plot_drugs  <- unname(drug_map[found_upper])
+
+    missing_upper <- setdiff(req_upper, names(drug_map))
+    if (length(missing_upper)) {
+      missing_original <- req[req_upper %in% missing_upper]
+      message("[save_leapr_plots] Skipping ", length(missing_original),
+              " requested drug(s) not present in res_list (case-insensitive match): ",
+              paste(utils::head(missing_original, 10), collapse = ", "),
+              if (length(missing_original) > 10) paste0(" ... +", length(missing_original) - 10, " more") else "")
+    }
+  }
+
+  if (!length(plot_drugs)) {
+    message("[save_leapr_plots] No matching drugs to plot.")
+    return(invisible(NULL))
+  }
+
+  for (drug in plot_drugs) {
     two <- res_list[[drug]]
+    if (is.null(two)) next
 
     # TOP (resistant)
     if (!is.null(two$top)) {
-      p_top <- leapR::plot_leapr_bar(two$top,
-                                     title = paste0(drug, " — ", omic_label, " (Resistant)"),
-                                     top_n = top_n)
+      p_top <- leapR::plot_leapr_bar(
+        two$top,
+        title = paste0(drug, " — ", omic_label, " (Resistant)"),
+        top_n = top_n
+      )
       if (!is.null(p_top)) {
-        fn <- file.path("figs", paste0("pathways_", safelabel(drug), "_", omic_label,
-                                       "_resistant_top", top_n, ".pdf"))
+        fn <- file.path(outdir, paste0(
+          "pathways_", safelabel(drug), "_", omic_label, "_resistant_top", top_n, ".pdf"
+        ))
         ggplot2::ggsave(fn, p_top, width = 7, height = 5, device = grDevices::cairo_pdf)
       }
     }
 
     # BOTTOM (Sensitive)
     if (!is.null(two$bottom)) {
-      p_bot <- leapR::plot_leapr_bar(two$bottom,
-                                     title = paste0(drug, " — ", omic_label, " (Sensitive)"),
-                                     top_n = top_n)
+      p_bot <- leapR::plot_leapr_bar(
+        two$bottom,
+        title = paste0(drug, " — ", omic_label, " (Sensitive)"),
+        top_n = top_n
+      )
       if (!is.null(p_bot)) {
-        fn <- file.path("figs", paste0("pathways_", safelabel(drug), "_", omic_label,
-                                       "_sensitive_top", top_n, ".pdf"))
+        fn <- file.path(outdir, paste0(
+          "pathways_", safelabel(drug), "_", omic_label, "_sensitive_top", top_n, ".pdf"
+        ))
         ggplot2::ggsave(fn, p_bot, width = 7, height = 5, device = grDevices::cairo_pdf)
       }
     }
   }
+
   invisible(NULL)
 }

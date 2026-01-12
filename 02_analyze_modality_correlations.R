@@ -1,4 +1,34 @@
-# analyze_modality.R
+# ---------------------------------------------------------------------------
+# 02_analyze_modality.R
+# ---------------------------------------------------------------------------
+# Purpose
+# - Given (1) drug response fits and (2) a long-format omics table for one modality,
+#   this script builds sample x drug and sample x feature matrices, makes a few summary
+#   plots (drug efficacy/variability + optional heatmap), and computes Spearman
+#   correlations between drug response and molecular features.
+#
+# Main entry
+# - analyze_modality(fits, df_long, sample_col, feature_col, value_col, ...)
+#
+# Inputs
+# - fits: long drug response table with improve_sample_id, improve_drug_id,
+#         dose_response_metric, dose_response_value
+# - df_long: long omics table with sample IDs + feature IDs + values
+# - sample_col / feature_col / value_col: column names in df_long that identify
+#         the sample, the molecular feature, and the measurement to analyze
+#
+# Outputs (written to outdir)
+# - most_efficacious.pdf, most_variable.pdf
+# - drug_heatmap_large.pdf (optional; only for drugs measured in all samples)
+# - cor_features_by_drug.pdf (counts of significant correlated features per drug)
+#
+# Returns (as a list)
+# - drug_mat, feat_mat: wide matrices used for analysis
+# - cor_tbl: per drug-feature correlations (Spearman) + p-values + FDR
+# - cor_summary / cor_plot: summary of significant correlations
+# - drug_summary: per-drug mean response, # measured, and variability
+# ---------------------------------------------------------------------------
+
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)

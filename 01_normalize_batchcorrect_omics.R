@@ -1,9 +1,38 @@
 # =============================================================================
 # normalize_omics_pipeline.R
-#   Arguments:
-#  - write_outputs: master on/off for writing CSVs, PDFs, and uploading
-#  - save_basename: override base name used in filenames
-#  - do_batch_correct: skip ComBat when FALSE; use combined matrix instead
+#
+# Main entry point:
+#   run_modality(modality, batches, meta, syn, ...)
+#
+# Key inputs (with examples):
+#
+# Example batches value:
+# batches <- list(
+#   list(syn_id = "syn69963552", cohort = 1, value_start_col = 5, fname_aliquot_index = 8),
+#   list(syn_id = "syn69947351", cohort = 2, value_start_col = 5, fname_aliquot_index = 9)
+# )
+#
+# Arguments:
+#  - modality: Which data type to run: "phospho", "global", or "rna"
+#  - batches: List of batch configs; each element should include at least:
+#       * syn_id: Synapse file ID for the wide feature×sample table
+#       * cohort: Cohort/batch label used for joining meta and for ComBat batching
+#     Optional per-batch fields:
+#       * value_start_col: Column index where sample measurement columns begin (auto-detected if NULL)
+#       * fname_aliquot_index: Token index (split on "_") used to parse aliquot number from sample filenames
+#  - meta: Sample metadata table used to join batch sample IDs to Patient/Tumor/Specimen
+#          (cnF_helper_code.R creates this.)
+#  - syn: Synapse client object used for Synapse reading/upload (synapser)
+#  - drop_name_substrings: Regex pattern(s); sample columns matching any pattern will be removed (QC/blank runs)
+#  - out_dir: Output directory for generated CSV/PDF files
+#  - out_prefix: Default base name for output files; if NULL (recommended), derived from modality (sanitized)
+#  - upload_parent_id: Synapse project/folder ID to upload outputs into
+#                      (ignored if NULL or write_outputs=FALSE)
+#  - pcols: Color vector for PCA plotting (names should match Patient IDs)
+#           (cnF_helper_code.R creates this.)
+#  - write_outputs: Master toggle to write CSV/PDF outputs and perform uploads
+#  - save_basename: Override base name used in output filenames (supersedes out_prefix)
+#  - do_batch_correct: If FALSE, skip ComBat and use combined matrix instead
 # =============================================================================
 
 suppressPackageStartupMessages({
@@ -590,19 +619,25 @@ perform_uploads <- function(paths, syn, parent_id) {
 #####
 # This is how we call the function / pipeline
 
+# Example batches value:
+# batches <- list(
+#   list(syn_id = "syn69963552", cohort = 1, value_start_col = 5, fname_aliquot_index = 8),
+#   list(syn_id = "syn69947351", cohort = 2, value_start_col = 5, fname_aliquot_index = 9)
+# )
+
 run_modality <- function(
-    modality,
-    batches,
-    meta,
-    syn,
-    drop_name_substrings = NULL,
-    out_dir = ".",
-    out_prefix = NULL,
-    upload_parent_id = NULL,
-    pcols = NULL,
-    write_outputs = TRUE,          # master toggle to write CSV/PDF & upload
-    save_basename = NULL,          # override base name used in output files
-    do_batch_correct = TRUE        # if FALSE, skip ComBat and use combined matrix
+    modality,                # Which data type to run: "phospho", "global", or "rna"
+    batches,                 # List of batch configs (each element should include at least: syn_id, cohort; optionally: value_start_col, fname_aliquot_index)
+    meta,                    # Sample metadata table used to join batch sample IDs to Patient/Tumor/Specimen - cnF_helper_code.R creates this.
+    syn,                     # Synapse client object used for synapse reading/upload (synapser)
+    drop_name_substrings = NULL, # Regex pattern - sample columns matching any pattern will be removed (QC/blank runs)
+    out_dir = ".",           # Output directory for generated CSV/PDF files
+    out_prefix = NULL,       # Default base name for output files; if NULL (recommended), derived from modality (sanitized)
+    upload_parent_id = NULL, # Synapse project ID to upload outputs into (ignored if NULL or write_outputs=FALSE)
+    pcols = NULL,            # Color vector for PCA plotting (names should match Patient IDs) - cnF_helper_code.R creates this.
+    write_outputs = TRUE,    # master toggle to write CSV/PDF & upload
+    save_basename = NULL,    # override base name used in output files
+    do_batch_correct = TRUE  # if FALSE, skip ComBat and use combined matrix
 ) {
   message("==================================================")
   message("Starting run_modality(): ", modality)
