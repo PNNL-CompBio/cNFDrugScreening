@@ -1,7 +1,6 @@
 # cNF multi-omics analysis pipeline overview
 Purpose: Reference for running the cNF analysis end-to-end and what each stage produces.  
 The notebooks (`.Rmd`) are the primary analysis entry points; the `.R` scripts are sourced helpers.
-The `.html` files are the knitted R markdown files from the latest run.
 
 ## Quick run order (and what each file sources)
 
