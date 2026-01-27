@@ -47,6 +47,13 @@ suppressPackageStartupMessages({
 
 # Small helpers
 modified_zscore <- function(x, na.rm = TRUE) {
+  #   Robust z-score for a numeric vector using median and MAD (less sensitive to
+  #   outliers than mean/SD). If MAD is 0 or NA, returns all zeros.
+  # Inputs:
+  #   x: numeric vector
+  #   na.rm: TRUE/FALSE; whether to ignore NA when computing median/MAD
+  # Output:
+  #   numeric vector (same length as x)
   m  <- suppressWarnings(stats::median(x, na.rm = na.rm))
   md <- suppressWarnings(stats::mad(x, constant = 1, na.rm = na.rm))
   if (is.na(md) || md == 0) return(rep(0, length(x)))
@@ -54,11 +61,22 @@ modified_zscore <- function(x, na.rm = TRUE) {
 }
 
 filter_by_missingness <- function(mat) {
+  #   Filter features (rows) by missingness: keep rows where <= 50% of values are NA.
+  # Inputs:
+  #   mat: numeric matrix (features x samples)
+  # Output:
+  #   numeric matrix with a subset of rows retained
   keep <- apply(mat, 1, function(r) mean(is.na(r)) <= 0.5)
   mat[keep, , drop = FALSE]
 }
 
 union_rows_fill_NA <- function(mats) {
+  #   Align a list of matrices to the union of all rownames (features), filling
+  #   missing feature rows in each matrix with NA.
+  # Inputs:
+  #   mats: list of numeric matrices with rownames
+  # Output:
+  #   list of numeric matrices, each reindexed to the same union row set
   all_feats <- Reduce(union, lapply(mats, rownames))
   lapply(mats, function(m) {
     mm <- matrix(NA_real_, nrow = length(all_feats), ncol = ncol(m),
@@ -69,6 +87,12 @@ union_rows_fill_NA <- function(mats) {
 }
 
 collapse_duplicate_features <- function(mat) {
+  #   Collapse duplicate feature IDs (duplicate rownames) by summing values across
+  #   duplicates for each sample (NA treated as 0 for summation).
+  # Inputs:
+  #   mat: numeric matrix (features x samples) with rownames as feature IDs
+  # Output:
+  #   numeric matrix with unique rownames (duplicates collapsed)
   if (!any(duplicated(rownames(mat)))) return(mat)
   grp <- split(seq_len(nrow(mat)), rownames(mat))
   collapsed <- do.call(rbind, lapply(grp, function(ix) colSums(mat[ix, , drop = FALSE], na.rm = TRUE)))
@@ -77,16 +101,33 @@ collapse_duplicate_features <- function(mat) {
 }
 
 make_dropper <- function(substrings) {
+  #   Build a function that flags sample column names to drop based on one or more
+  #   regex patterns. Useed for removing protocol optimization runs.
+  # Inputs:
+  #   substrings: NULL or character vector of regex patterns
+  # Output:
+  #   function(x): logical vector; TRUE means "drop this name"
   if (is.null(substrings) || length(substrings) == 0) return(function(x) rep(FALSE, length(x)))
   pattern <- paste0(substrings, collapse = "|")
   function(x) grepl(pattern, x, fixed = FALSE)
 }
 
 # Functions to clean up irregular names
+#   Extract the filename portion from a path or portion of path (drops directories).
+# Inputs:
+#   x: character vector of file paths
+# Output:
+#   character vector of basenames
 basename_only   <- function(x) sub("^.*[\\\\/]", "", x)
 basename_no_ext <- function(x) sub("\\.[^.]+$", "", basename_only(x))
 
 normalize_specimen_like <- function(x) {
+  #   Normalize specimen strings to a consistent form for joining (lowercase,
+  #   remove whitespace, unify separators, normalize organoid/tissue/skin labels).
+  # Inputs:
+  #   x: character vector
+  # Output:
+  #   character vector of normalized specimen-like strings
   y <- tolower(x)
   y <- gsub("\\s+", "", y)
   y <- gsub("\\.", "-", y)
@@ -101,6 +142,13 @@ normalize_specimen_like <- function(x) {
 }
 
 parse_rna_header_triplet <- function(fnames) {
+  #   Parse RNA sample headers expected to look like "sample.T1.condition" (dot-delimited).
+  #   Extracts sample_id, optional tumor (T#), and condition; also builds a normalized
+  #   specimen key to help join against metadata.
+  # Inputs:
+  #   fnames: character vector of RNA sample column names
+  # Output:
+  #   data.frame with columns: fname, sample_id, tumor, condition_raw, condition_norm, specimen_norm
   toks_list <- strsplit(fnames, "\\.")
   out <- lapply(seq_along(toks_list), function(i) {
     toks <- toks_list[[i]]
@@ -149,6 +197,12 @@ parse_rna_header_triplet <- function(fnames) {
 
 # Functions to get data from Synapse
 read_wide_from_synapse <- function(syn, syn_id) {
+  #   Download a Synapse file and read it as a wide tab-delimited table (features x samples).
+  # Inputs:
+  #   syn: Synapse client object (synapser)
+  #   syn_id: Synapse file ID (e.g., "syn69963552")
+  # Output:
+  #   data.frame containing the wide table (annotation columns + sample columns)
   message(" Reading Synapse file: ", syn_id)
   df <- read.table(
     syn$get(syn_id)$path,
@@ -161,6 +215,13 @@ read_wide_from_synapse <- function(syn, syn_id) {
 }
 
 detect_value_start_col <- function(wide_df, fallback = 5) {
+  #   Auto-detect where sample measurement columns start in a wide table by looking for
+  #   headers that resemble file paths or RAW/mzML names. Falls back if not found.
+  # Inputs:
+  #   wide_df: data.frame (wide)
+  #   fallback: integer column index to use if auto-detection fails
+  # Output:
+  #   integer column index for the first sample column
   nms <- colnames(wide_df)
   is_pathy <- grepl("\\.(raw|mzml)$", nms, ignore.case = TRUE) |
     grepl("[/\\\\]", nms) |
@@ -175,6 +236,14 @@ detect_value_start_col <- function(wide_df, fallback = 5) {
 }
 
 parse_fnames <- function(fnames, aliquot_field_index, cohort) {
+  #   Parse sample column names into (fname, aliquot, cohort). Attempts to extract aliquot
+  #   from a specific underscore token index; otherwise tries the last numeric token.
+  # Inputs:
+  #   fnames: character vector of sample column names
+  #   aliquot_field_index: integer token index (split on "_") or NULL
+  #   cohort: cohort label to attach to all parsed samples
+  # Output:
+  #   data.frame with columns: fname, aliquot (numeric or NA), cohort
   message("Parsing filenames to (fname, aliquot, cohort)")
   rows <- lapply(fnames, function(fname) {
     toks <- strsplit(fname, "_", fixed = TRUE)[[1]]
@@ -209,11 +278,29 @@ parse_fnames <- function(fnames, aliquot_field_index, cohort) {
 #Feature ID builders
 #####
 build_phospho_ids <- function(df) {
+  #   Build unique phosphosite feature IDs from phospho annotation columns.
+  # Inputs:
+  #   df: data.frame containing at least Gene.Names, Residue, Site
+  # Output:
+  #   character vector of feature IDs (one per row)
   lsite <- tolower(df$Residue)
   paste0(df$`Gene.Names`, "-", df$Residue, df$Site, lsite)
 }
+
+#   Build global proteomics feature IDs (gene symbols).
+# Inputs:
+#   df: data.frame containing a Genes column
+# Output:
+#   character vector of feature IDs (one per row)
 build_global_ids <- function(df) as.character(df$Genes)
+
 build_rna_ids <- function(df) {
+  #   Build RNA feature IDs by selecting a gene identifier column (tries common names
+  #   like gene_id, gene_name, Symbol, Ensembl). Errors if none found.
+  # Inputs:
+  #   df: data.frame containing a recognized gene ID column
+  # Output:
+  #   character vector of feature IDs (one per row)
   cand <- c("gene_id","Gene","gene","gene_name","Symbol","symbol","ENSEMBL","Ensembl","ensembl_gene_id")
   hit  <- cand[cand %in% names(df)]
   if (length(hit) == 0) stop("RNA feature-id column not found.")
@@ -222,6 +309,11 @@ build_rna_ids <- function(df) {
   as.character(df[[hit[[1]]]])
 }
 pick_builder <- function(modality) {
+  #   Choose the correct feature-ID builder function based on modality.
+  # Inputs:
+  #   modality: "phospho", "global", or "rna" (case-insensitive)
+  # Output:
+  #   function(df) -> character vector of feature IDs
   m <- tolower(modality)
   if (m == "phospho") return(build_phospho_ids)
   if (m == "global")  return(build_global_ids)
@@ -232,6 +324,12 @@ pick_builder <- function(modality) {
 # Functions to Normalize Data. Uses SummarizedExperiment
 
 coldata_tbl <- function(se) {
+  #   Convert SummarizedExperiment colData into a clean data.frame with consistent
+  #   filename fields (fname, basename, stem). Avoids name collisions.
+  # Inputs:
+  #   se: SummarizedExperiment
+  # Output:
+  #   data.frame of sample metadata; includes fname, fname_base, fname_stem
   cd <- as.data.frame(SummarizedExperiment::colData(se), stringsAsFactors = FALSE)
   if ("fname" %in% names(cd)) names(cd)[names(cd) == "fname"] <- ".coldata_fname"
   names(cd) <- make.unique(names(cd), sep = "_")
@@ -243,12 +341,36 @@ coldata_tbl <- function(se) {
 }
 
 looks_like_sample_header <- function(x) {
+  #   Heuristic test for whether a column name looks like a raw file/sample path
+  #   (e.g., contains slashes or ends in .raw/.mzml).
+  # Inputs:
+  #   x: character vector of column names
+  # Output:
+  #   logical vector; TRUE indicates "looks like a sample header"
+  # Example file:
+  # "I:\UserData\LeDay\Piehowski_orgonoids_Feb25\RawData\1338241_cNF_organoid_DIA_P_01_29Jan25_Ned_BEHCoA-25-01-02.raw"
   grepl("\\.(raw|mzml)$", x, ignore.case = TRUE) |
     grepl("[/\\\\]", x) |
     grepl("^[A-Za-z]:\\\\", x)
 }
 
 make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop_name, modality) {
+  #   Build a SummarizedExperiment from a wide feature x sample table:
+  #   - selects sample columns
+  #   - converts values to numeric
+  #   - drops unwanted sample columns by name pattern
+  #   - attaches sample metadata by joining on (aliquot, cohort)
+  #   - applies extra RNA-specific parsing and metadata reconciliation
+  # Inputs:
+  #   wide_df: wide data.frame (features + sample columns)
+  #   value_start_col: integer index of first sample column
+  #   feature_ids: character vector of feature IDs (length = nrow(wide_df))
+  #   fnames_df: data.frame mapping fname->aliquot/cohort (from parse_fnames)
+  #   meta: metadata table used to map aliquot/cohort to Patient/Tumor/Specimen
+  #   drop_name: function(x)->logical; TRUE means drop that sample column
+  #   modality: "phospho", "global", or "rna"
+  # Output:
+  #   SummarizedExperiment with assay "values" and populated colData/rowData
   all_candidate <- colnames(wide_df)[value_start_col:ncol(wide_df)]
   has_pathy <- any(looks_like_sample_header(all_candidate))
   if (has_pathy) {
@@ -258,8 +380,8 @@ make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop
     sample_cols <- setdiff(all_candidate, c("Site", "Sequence"))
   }
 
-  message(" Candidate sample columns (first 6):")
-  print(utils::head(sample_cols, 6))
+  # message(" Candidate sample columns (first 6):")
+  # print(utils::head(sample_cols, 6))
 
   message(" Casting measurement block to numeric")
   raw_block <- wide_df[, sample_cols, drop = FALSE]
@@ -350,10 +472,10 @@ make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop
   }
 
   message(" - Example cdata rows:")
-  print(utils::head(cdata[, intersect(c(
-    "fname","aliquot","cohort","Specimen","Patient","Tumor",
-    "sample_id","tumor","condition_raw","condition_norm","specimen_norm"
-  ), names(cdata)), drop = FALSE], 10))
+  # print(utils::head(cdata[, intersect(c(
+  #   "fname","aliquot","cohort","Specimen","Patient","Tumor",
+  #   "sample_id","tumor","condition_raw","condition_norm","specimen_norm"
+  # ), names(cdata)), drop = FALSE], 10))
 
   rn <- cdata$fname
   cdata_nofname <- dplyr::select(cdata, -fname)
@@ -372,12 +494,27 @@ make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop
 }
 
 scale_columns_modified_z <- function(m) {
+  #   Apply modified_zscore() to each column of a matrix (per-sample robust scaling).
+  # Inputs:
+  #   m: numeric matrix (features x samples)
+  # Output:
+  #   numeric matrix of same dimensions (column-wise robust z-scored)
   out <- m
   for (j in seq_len(ncol(m))) out[, j] <- modified_zscore(m[, j])
   out
 }
 
 normalize_by_modality <- function(se, modality) {
+  #   Normalize a SummarizedExperiment assay using modality-specific transforms:
+  #   phospho: 0->NA, filter missingness, log2(x+0.01), robust zscore
+  #   global: log2(x), robust zscore
+  #   rna: filter missingness, log2(x+1), robust zscore
+  #   Also collapses duplicated feature IDs.
+  # Inputs:
+  #   se: SummarizedExperiment with assay "values"
+  #   modality: "phospho", "global", or "rna"
+  # Output:
+  #   SummarizedExperiment with normalized assay "values"
   mtype <- tolower(modality)
   mat0  <- as.matrix(SummarizedExperiment::assay(se, "values"))
   c0    <- colnames(mat0)
@@ -415,6 +552,12 @@ normalize_by_modality <- function(se, modality) {
 # Function to Combine Data (batches)
 
 combine_batches_intersection <- function(se_list) {
+  #   Combine multiple normalized batches by intersecting shared features (rownames),
+  #   then concatenating samples (cbind). Also stacks colData.
+  # Inputs:
+  #   se_list: list of SummarizedExperiment objects (normalized)
+  # Output:
+  #   SummarizedExperiment containing combined matrix and combined colData
   message("Combining batches (intersection of features, then cbind samples)")
   mats  <- lapply(se_list, function(se) as.matrix(SummarizedExperiment::assay(se, "values")))
   feats <- Reduce(intersect, lapply(mats, rownames))
@@ -438,15 +581,21 @@ combine_batches_intersection <- function(se_list) {
   )
   message(sprintf(" - Combined assay dims: %d feats × %d samples", nrow(se), ncol(se)))
   message(" - Head(sample names) in combined assay:")
-  print(utils::head(colnames(SummarizedExperiment::assay(se, "values")), 6))
+  # print(utils::head(colnames(SummarizedExperiment::assay(se, "values")), 6))
   message(" - Head(rownames) in combined colData (should match):")
-  print(utils::head(rownames(SummarizedExperiment::colData(se)), 6))
+  # print(utils::head(rownames(SummarizedExperiment::colData(se)), 6))
   invisible(se)
 }
 
 # Combat Function. (Lots of messages to help debug)
 
 combat_by_cohort <- function(se) {
+  #   Batch-correct the combined matrix using ComBat (sva) with colData$cohort as the
+  #   batch variable. Replaces non-finite values with 0 before correction.
+  # Inputs:
+  #   se: SummarizedExperiment with assay "values" and colData column "cohort"
+  # Output:
+  #   SummarizedExperiment with batch-corrected assay "values"
   message("Running ComBat by cohort (batch-only; mean.only = FALSE)")
   suppressPackageStartupMessages(library(sva))
 
@@ -462,7 +611,7 @@ combat_by_cohort <- function(se) {
   if (!"cohort" %in% names(cd)) stop("colData must contain 'cohort' for ComBat batching.")
 
   batch <- droplevels(as.factor(cd$cohort))
-  message(" Batch table (pre-drop):"); print(table(batch, useNA = "ifany"))
+  # message(" Batch table (pre-drop):"); print(table(batch, useNA = "ifany"))
 
   keep <- !is.na(batch)
   if (any(!keep)) {
@@ -472,25 +621,32 @@ combat_by_cohort <- function(se) {
     cd    <- cd[keep, , drop = FALSE]
   }
 
-  message(" Final check — ncol(mat)=", ncol(mat), "; length(batch)=", length(batch))
-  message(" Batch table (final):"); print(table(batch, useNA = "ifany"))
+  # message(" Final check — ncol(mat)=", ncol(mat), "; length(batch)=", length(batch))
+  # message(" Batch table (final):"); print(table(batch, useNA = "ifany"))
 
   pre_by_cohort <- tapply(colMeans(mat), batch, sd)
-  message(" Pre-ComBat: SD of column means by cohort:"); print(pre_by_cohort)
+  # message(" Pre-ComBat: SD of column means by cohort:"); print(pre_by_cohort)
 
   cb <- sva::ComBat(dat = mat, batch = batch, mean.only = FALSE, par.prior = TRUE)
 
   post_by_cohort <- tapply(colMeans(cb), batch, sd)
-  message(" Post-ComBat: SD of column means by cohort:"); print(post_by_cohort)
+  # message(" Post-ComBat: SD of column means by cohort:"); print(post_by_cohort)
 
   SummarizedExperiment::assay(se, "values") <- cb
-  message(" Matrix dims after ComBat:  ", nrow(cb), " × ", ncol(cb))
+  # message(" Matrix dims after ComBat:  ", nrow(cb), " × ", ncol(cb))
   invisible(se)
 }
 
 # Plot Functions (PCA) + more debug messages
 
 se_to_long <- function(se, modality) {
+  #   Convert a SummarizedExperiment matrix into long format (one row per feature-sample
+  #   pair) and join sample metadata from colData.
+  # Inputs:
+  #   se: SummarizedExperiment with assay "values"
+  #   modality: "phospho", "global", or "rna" (controls feature column name)
+  # Output:
+  #   data.frame in long format with correctedAbundance + sample metadata columns
   feature_col <- if (tolower(modality) == "global") "Gene" else "feature_id"
 
   avals <- as.data.frame(SummarizedExperiment::assay(se, "values"), check.names = FALSE)
@@ -519,6 +675,12 @@ se_to_long <- function(se, modality) {
 }
 
 pca_df_present_in_all <- function(se) {
+  #   Prepare a PCA data.frame using only features that are complete (finite) across
+  #   all samples. Joins PCA scores with sample metadata for plotting.
+  # Inputs:
+  #   se: SummarizedExperiment with assay "values"
+  # Output:
+  #   data.frame with PC1/PC2 and metadata columns (Patient/Tumor/Specimen/cohort, etc.)
   message("Preparing PCA (features present in ALL samples)")
   mat <- as.matrix(SummarizedExperiment::assay(se, "values"))
 
@@ -548,8 +710,8 @@ pca_df_present_in_all <- function(se) {
     message(" ! Warning: Patient is NA for all samples after join. Will color/shape by cohort.")
     df1$Patient_fallback <- as.character(df1$cohort)
     df1$Tumor_fallback   <- as.character(df1$cohort)
-    message(" - DEBUG: head(df1$fname):"); print(utils::head(df1$fname, 6))
-    message(" - DEBUG: head(cd$fname):");   print(utils::head(cd$fname, 6))
+    # message(" - DEBUG: head(df1$fname):"); print(utils::head(df1$fname, 6))
+    # message(" - DEBUG: head(cd$fname):");   print(utils::head(cd$fname, 6))
   }
 
   if ("Specimen" %in% names(df1)) {
@@ -560,6 +722,14 @@ pca_df_present_in_all <- function(se) {
 }
 
 plot_pca <- function(pc_df, title_text, pcols = NULL) {
+  #   Create a PCA scatter plot (PC1 vs PC2), choosing a sensible color/shape mapping
+  #   based on available metadata (prefers Patient/Tumor; falls back to cohort/condition).
+  # Inputs:
+  #   pc_df: data.frame returned by pca_df_present_in_all()
+  #   title_text: plot title string
+  #   pcols: optional named vector of colors for Patient values
+  # Output:
+  #   ggplot object (PCA scatter)
   color_col <- if ("Patient" %in% names(pc_df) && any(!is.na(pc_df$Patient))) {
     "Patient"
   } else if ("condition_norm" %in% names(pc_df) && any(!is.na(pc_df$condition_norm))) {
@@ -588,6 +758,13 @@ plot_pca <- function(pc_df, title_text, pcols = NULL) {
 }
 
 plot_hist <- function(se, title_text) {
+  #   Plot a histogram of all assay values, filled by cohort, to visualize distributions
+  #   (e.g., pre- vs post-ComBat).
+  # Inputs:
+  #   se: SummarizedExperiment with assay "values"
+  #   title_text: plot title string
+  # Output:
+  #   ggplot object (histogram)
   cd <- coldata_tbl(se)
   df <- as.data.frame(SummarizedExperiment::assay(se, "values")) |>
     tidyr::pivot_longer(everything(), names_to = "fname", values_to = "val") |>
@@ -603,6 +780,13 @@ plot_hist <- function(se, title_text) {
 # Upload function
 
 perform_uploads <- function(paths, syn, parent_id) {
+  #   Upload a set of local output files to a Synapse folder/project using syn$store().
+  # Inputs:
+  #   paths: character vector of local file paths
+  #   syn: Synapse client object (synapser)
+  #   parent_id: Synapse folder/project ID to store into
+  # Output:
+  #   invisible(NULL); side-effect is file uploads to Synapse
   if (is.null(parent_id) || length(paths) == 0) return(invisible(NULL))
   message("All steps succeeded — uploading ", length(paths), " file(s) to Synapse…")
   for (p in paths) {
@@ -625,7 +809,31 @@ perform_uploads <- function(paths, syn, parent_id) {
 #   list(syn_id = "syn69947351", cohort = 2, value_start_col = 5, fname_aliquot_index = 9)
 # )
 
+
 run_modality <- function(
+  #   End-to-end normalization pipeline for one modality across one or more batches:
+  #   - read wide tables from Synapse
+  #   - build feature IDs + construct SummarizedExperiment per batch
+  #   - modality-specific normalization per batch
+  #   - combine batches on shared feature intersection
+  #   - QC plots (PCA + hist) pre and post
+  #   - optional ComBat batch correction by cohort
+  #   - export long CSVs and optional Synapse uploads
+  # Inputs:
+  #   modality: "phospho", "global", or "rna"
+  #   batches: list of batch configs (syn_id, cohort, optional parsing hints)
+  #   meta: sample metadata table for joining
+  #   syn: Synapse client object
+  #   drop_name_substrings: optional regex patterns to drop sample columns
+  #   out_dir: directory for outputs
+  #   out_prefix: base name for outputs (defaults from modality)
+  #   upload_parent_id: Synapse folder/project ID for uploads (optional)
+  #   pcols: optional named color vector for Patient PCA coloring
+  #   write_outputs: TRUE/FALSE to write CSV/PDF and upload
+  #   save_basename: override base output stem
+  #   do_batch_correct: TRUE/FALSE to run ComBat
+  # Output:
+  #   list containing SE objects, long tables, PCA data, plot objects, and written file paths
     modality,                # Which data type to run: "phospho", "global", or "rna"
     batches,                 # List of batch configs (each element should include at least: syn_id, cohort; optionally: value_start_col, fname_aliquot_index)
     meta,                    # Sample metadata table used to join batch sample IDs to Patient/Tumor/Specimen - cnF_helper_code.R creates this.

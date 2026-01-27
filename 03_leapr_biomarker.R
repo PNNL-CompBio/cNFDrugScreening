@@ -51,12 +51,17 @@ suppressPackageStartupMessages({
 # -----------------------------
 # Helpers
 # -----------------------------
-# Long to wide matrix (rows = samples, cols = features)
-# df_long columns:
-#   sample_col  : sample IDs (e.g., "Specimen")
-#   feature_col : feature IDs (e.g., "feature_id", "Gene", "site") depending on input group
-#   value_col   : numeric values (e.g., "correctedAbundance")
 long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
+  #   Convert a long-format omics table into a numeric matrix (rows = samples, cols = features).
+  #   Cleans sample/feature IDs, drops NA/blank IDs, pivots to wide, fills missing with 0,
+  #   and averages duplicates (mean) per sample-feature pair.
+  # Inputs:
+  #   df_long: long omics data.frame
+  #   sample_col: column name in df_long for sample IDs
+  #   feature_col: column name in df_long for feature IDs
+  #   value_col: column name in df_long for numeric values
+  # Output:
+  #   numeric matrix with rownames = sample IDs and colnames = feature IDs, or NULL if empty
   if (is.null(df_long) || !nrow(df_long)) return(NULL)
 
   df <- df_long |>
@@ -115,6 +120,13 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 
 # ---- PHOSPHO
 .extract_gene_from_site <- function(site_id) {
+  #   Extract a gene symbol from a phosphosite/site identifier string. Primarily uses the
+  #   substring before the first '-' (e.g., "AAAS-S495s" -> "AAAS"); falls back to splitting
+  #   on common delimiters if needed.
+  # Inputs:
+  #   site_id: character scalar (site/feature ID)
+  # Output:
+  #   character scalar gene symbol (uppercase) or NA if not parseable
   if (is.na(site_id) || site_id == "") return(NA_character_)
   x <- as.character(site_id)
 
@@ -134,6 +146,14 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 
 # Build phospho site gene map from long table
 .build_phospho_gene_map_from_long <- function(df_long, feature_col) {
+  #   Build a mapping from phosphosite IDs to gene symbols using columns present in the
+  #   long table (preferred). If no suitable gene column exists, falls back to parsing gene
+  #   symbols from the site IDs themselves.
+  # Inputs:
+  #   df_long: long omics data.frame
+  #   feature_col: column name in df_long containing phosphosite IDs
+  # Output:
+  #   named character vector mapping site -> gene, or NULL if no sites found
   gene_cols <- c("Gene","gene","hgnc_id","hgnc_symbol","protein","Protein","Symbol","symbol")
   has <- gene_cols[gene_cols %in% colnames(df_long)]
   if (length(has)) {
@@ -157,6 +177,14 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 
 
 .collapse_sites_to_genes <- function(cor_named_vec, map_site2gene, agg = c("mean","maxabs")) {
+  #   Collapse a named vector of site-level correlation values to gene-level values using a
+  #   site->gene mapping. Supports aggregation by mean or by the max absolute correlation per gene.
+  # Inputs:
+  #   cor_named_vec: named numeric vector (names = site IDs, values = correlations)
+  #   map_site2gene: named character vector mapping site -> gene
+  #   agg: "mean" or "maxabs" (how to aggregate multiple sites per gene)
+  # Output:
+  #   named numeric vector (names = genes, values = aggregated correlations)
   agg <- match.arg(agg)
   if (is.null(map_site2gene) || !length(cor_named_vec)) return(cor_named_vec)
 
@@ -186,6 +214,12 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 
 # ---- Normalize phosphosite IDs to match kinasesubstrates (e.g. "AAAS-S495s" -> "AAAS-S495")
 .normalize_kinase_site_id <- function(x) {
+  #   Normalize phosphosite IDs to better match leapR kinasesubstrates formatting by trimming
+  #   trailing lowercase letters (e.g., "AAAS-S495s" -> "AAAS-S495").
+  # Inputs:
+  #   x: character vector of phosphosite IDs
+  # Output:
+  #   character vector of normalized site IDs
   x <- as.character(x)
   x <- trimws(x)
   # Drop trailing lowercase letters
@@ -194,6 +228,13 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 
 # Spearman correlations
 .col_spearman <- function(vec, mat) {
+  #   Compute Spearman correlation between a drug response vector and each feature column in a
+  #   sample × feature matrix. Uses sample ID intersection and pairwise complete observations.
+  # Inputs:
+  #   vec: named numeric vector of responses (names = sample IDs)
+  #   mat: numeric matrix (rownames = sample IDs, cols = features)
+  # Output:
+  #   named numeric vector of correlations (one per feature column; NA where not computable)
   shared <- intersect(names(vec), rownames(mat))
   if (length(shared) < 3) return(setNames(rep(NA_real_, ncol(mat)), colnames(mat)))
   v <- vec[shared]
@@ -208,6 +249,16 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 # Build SummarizedExperiment to feed into leapR
 .build_se_from_corvec <- function(cor_named_vec, features_all, col_label,
                                   map_to_gene = NULL, assay_label = "proteomics") {
+  #   Build a single-column SummarizedExperiment containing correlation scores for a set of features,
+  #   suitable as input to leapR enrichment functions. Optionally stores a mapped gene ID in rowData.
+  # Inputs:
+  #   cor_named_vec: named numeric vector of scores (names = feature IDs)
+  #   features_all: character vector of features to include (sets row order and rownames)
+  #   col_label: column/sample label to assign in the SE (e.g., "<drug>_TOP")
+  #   map_to_gene: optional named vector mapping feature -> gene ID/symbol (stored as hgnc_id)
+  #   assay_label: assay name label to assign (e.g., "proteomics", "phospho", "rna")
+  # Output:
+  #   SummarizedExperiment with 1 assay column holding the scores
   v <- rep(NA_real_, length(features_all)); names(v) <- features_all
   common <- intersect(names(cor_named_vec), features_all)
   v[common] <- cor_named_vec[common]
@@ -224,12 +275,24 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 }
 
 .safe_leapr <- function(...) {
+  #   Run leapR::leapR() safely: catches errors, prints a readable message, and returns NULL
+  #   instead of stopping the whole pipeline. This is used for Debugging.
+  # Inputs:
+  #   ...: arguments passed directly to leapR::leapR()
+  # Output:
+  #   leapR result object/table, or NULL on error
   tryCatch(leapR::leapR(...),
            error = function(e) { message("[leapR] ", conditionMessage(e)); NULL })
 }
 
 # Load a leapR built-in geneset by name
 .load_leapr_geneset_by_name <- function(name) {
+  #   Load a built-in leapR geneset dataset by name (e.g., "kinasesubstrates", "krbpaths").
+  #   Validates the name and errors if the dataset cannot be loaded.
+  # Inputs:
+  #   name: character scalar geneset name
+  # Output:
+  #   geneset object loaded from the leapR package
   valid <- c("kinasesubstrates", "ncipid", "krbpaths", "longlist", "shortlist")
   if (!(name %in% valid)) {
     stop("Unknown geneset name: '", name, "'. Valid: ", paste(valid, collapse = ", "))
@@ -243,6 +306,13 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 
 # Decide default geneset from omic label when no override is provided
 .default_geneset_for_omic <- function(omic_label) {
+  #   Choose a default geneset database based on the omics label:
+  #   - phospho-like labels -> kinasesubstrates
+  #   - otherwise -> krbpaths
+  # Inputs:
+  #   omic_label: character scalar describing the modality (e.g., "phospho", "rna", "global")
+  # Output:
+  #   geneset object to use with leapR
   ol <- tolower(omic_label)
   if (ol %in% c("phospho","phosphoproteomics","phosphoprotein","phosphoproteome")) {
     .load_leapr_geneset_by_name("kinasesubstrates")
@@ -255,6 +325,26 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 # Main
 # -----------------------------
 run_leapr_directional_one_cached <- function(
+  #   For each drug, correlate uM_viability with each omics feature across samples, split features
+  #   into TOP (positive; more resistant) and BOTTOM (negative; more sensitive), then run leapR
+  #   enrichment separately on each direction. Supports phospho-specific site->gene handling,
+  #   optional site-normalization for kinasesubstrates, CSV writing, and caching to .RData.
+  # Inputs:
+  #   drugs: long drug-response data.frame (must include improve_drug_id, improve_sample_id, dose_response_metric, dose_response_value)
+  #   df_long: long omics data.frame (sample/feature/value columns)
+  #   sample_col: column name in df_long for sample IDs
+  #   feature_col: column name in df_long for feature IDs (gene/site)
+  #   value_col: column name in df_long for numeric measurement
+  #   omic_label: modality label used in assay naming and output filenames (e.g., "rna", "global", "phospho")
+  #   cache_path: file path to save/load cached results (.RData); skipped if always_rerun=TRUE
+  #   write_csvs: TRUE/FALSE; write per-drug TOP/BOTTOM leapR tables to CSV
+  #   always_rerun: TRUE/FALSE; ignore cache and recompute
+  #   min_features: minimum features required to run leapR for TOP/BOTTOM
+  #   test_one: TRUE/FALSE; only run the first drug (debug)
+  #   geneset_name: optional built-in leapR geneset name
+  #   geneset_object: optional geneset object to use directly (overrides geneset_name/default)
+  # Output:
+  #   named list by drug: res_list[[drug]]$top and res_list[[drug]]$bottom (leapR results or NULL)
     drugs,                 # Character vector of drugs to test (IDs/names used by your fits/model)
     df_long,               # Long-format omics table (one row per sample x feature)
     sample_col,            # Column name in df_long containing sample IDs
@@ -469,6 +559,16 @@ run_leapr_directional_one_cached <- function(
 # Plot and save using leapR builtin plotter
 # -----------------------------
 save_leapr_plots <- function(
+  #   Save leapR pathway barplots for TOP (resistant) and BOTTOM (sensitive) results for each drug.
+  #   Supports plotting all drugs or a requested subset (case-insensitive matching).
+  # Inputs:
+  #   res_list: named list returned by run_leapr_directional_one_cached()
+  #   omic_label: modality label used in plot titles and filenames
+  #   top_n: number of top pathways to plot per direction
+  #   drugs: NULL to plot all; otherwise character vector of drug IDs/names to plot (case-insensitive)
+  #   outdir: output directory for PDF files
+  # Output:
+  #   invisible(NULL); side-effect is writing PDF plots to outdir
     res_list,
     omic_label,
     top_n = 15,

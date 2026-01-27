@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# 02_analyze_modality.R
+# 02_analyze_modality_correlations.R
 # ---------------------------------------------------------------------------
 # Purpose
 # - Given (1) drug response fits and (2) a long-format omics table for one modality,
@@ -7,8 +7,18 @@
 #   plots (drug efficacy/variability + optional heatmap), and computes Spearman
 #   correlations between drug response and molecular features.
 #
-# Main entry
+# Main entry (This does both of the individual calls)
 # - analyze_modality(fits, df_long, sample_col, feature_col, value_col, ...)
+#
+# Individual Calls
+# - analyze_drug_response(fits, metric, outdir, heatmap_filename, ...)
+#     * Drug-only: builds drug_mat and writes 3 plots by default
+#       - most_efficacious.pdf
+#       - most_variable.pdf
+#       - drug heatmap (heatmap_filename)
+# - analyze_modality_correlations(df_long, sample_col, feature_col, value_col, drug_mat, ...)
+#     * Modality-only: builds feat_mat and computes correlations + summary plot
+#       - cor_features_by_drug.pdf
 #
 # Inputs
 # - fits: long drug response table with improve_sample_id, improve_drug_id,
@@ -43,6 +53,17 @@ dir.create("figs", showWarnings = FALSE)
 # Helpers
 
 make_feature_matrix <- function(df_long, shared_ids, sample_col, feature_col, value_col) {
+  #   Build a sample × feature matrix from a long-format omics table, restricted to a set
+  #   of shared sample IDs. Cleans IDs, drops blank IDs, pivots to wide, fills missing with 0,
+  #   and averages duplicates (mean) per sample-feature pair.
+  # Inputs:
+  #   df_long: long omics data.frame
+  #   shared_ids: character vector of sample IDs to keep
+  #   sample_col: column name in df_long for sample ID
+  #   feature_col: column name in df_long for feature ID
+  #   value_col: column name in df_long for numeric value
+  # Output:
+  #   data.frame (wide) with rownames = samples and columns = features
   df <- df_long %>%
     ungroup() %>%
     dplyr::filter(.data[[sample_col]] %in% shared_ids) %>%
@@ -94,11 +115,22 @@ make_feature_matrix <- function(df_long, shared_ids, sample_col, feature_col, va
 }
 
 make_drug_matrix <- function(
-    fits, metric = "uM_viability",
-    sample_col = "improve_sample_id",
-    drug_col   = "improve_drug_id",
-    value_col  = "dose_response_value",
-    metric_col = "dose_response_metric"
+    #   Build a sample × drug response matrix from the long drug fits table for a chosen metric
+  #   (e.g., uM_viability). Pivots to wide and averages duplicates (mean).
+  # Inputs:
+  #   fits: long drug response data.frame
+  #   metric: metric value to select from metric_col (default "uM_viability")
+  #   sample_col: sample ID column name in fits (default "improve_sample_id")
+  #   drug_col: drug ID column name in fits (default "improve_drug_id")
+  #   value_col: response value column name in fits (default "dose_response_value")
+  #   metric_col: metric label column name in fits (default "dose_response_metric")
+  # Output:
+  #   data.frame (wide) with rownames = samples and columns = drugs
+  fits, metric = "uM_viability",
+  sample_col = "improve_sample_id",
+  drug_col   = "improve_drug_id",
+  value_col  = "dose_response_value",
+  metric_col = "dose_response_metric"
 ) {
   fits %>%
     dplyr::filter(.data[[metric_col]] == metric) %>%
@@ -112,8 +144,21 @@ make_drug_matrix <- function(
 }
 
 summarize_drugs <- function(
-    fits, metric = "uM_viability", metric_col = "dose_response_metric",
-    outdir = "figs", rotate_x = 45
+    #   Summarize per-drug response for a selected metric and write two PDF scatter plots:
+  #   (1) "most_efficacious" (low mean viability) and (2) "most_variable" (high SD).
+  # Inputs:
+  #   fits: long drug response data.frame
+  #   metric: metric to analyze (default "uM_viability")
+  #   metric_col: column holding metric labels (default "dose_response_metric")
+  #   outdir: directory to write PDFs (default "figs")
+  #   rotate_x: x-axis label rotation angle for readability
+  # Output:
+  #   list with:
+  #     summary: data.frame of per-drug meanResponse, nMeasured, variability
+  #     p_eff: ggplot object for efficacious drugs
+  #     p_var: ggplot object for variable drugs
+  fits, metric = "uM_viability", metric_col = "dose_response_metric",
+  outdir = "figs", rotate_x = 45
 ) {
   ds <- fits %>%
     dplyr::filter(.data[[metric_col]] == metric) %>%
@@ -155,6 +200,15 @@ summarize_drugs <- function(
 }
 
 compute_cors <- function(drug_mat, feat_mat, shared_samples = NULL) {
+  #   Compute Spearman correlations between each drug response column and each feature column
+  #   across shared samples. Also computes per-pair p-values (cor.test) when enough data exists
+  #   and applies BH FDR correction.
+  # Inputs:
+  #   drug_mat: numeric matrix/data.frame (samples × drugs), rownames = sample IDs
+  #   feat_mat: numeric matrix/data.frame (samples × features), rownames = sample IDs
+  #   shared_samples: optional character vector of sample IDs to use; if NULL, uses rowname intersection
+  # Output:
+  #   tibble/data.frame with columns: drug, feature, cor, pval, fdr, direction
   if (is.null(shared_samples)) {
     shared_samples <- base::intersect(rownames(drug_mat), rownames(feat_mat))
   }
@@ -199,6 +253,17 @@ compute_cors <- function(drug_mat, feat_mat, shared_samples = NULL) {
 }
 
 summarize_correlated_features <- function(cor_tbl, fdr_thresh = 0.25, outdir = "figs") {
+  #   Summarize significant drug-feature associations by counting how many features are
+  #   significantly correlated with each drug (split by positive/negative direction),
+  #   and write a bar plot PDF.
+  # Inputs:
+  #   cor_tbl: correlation table from compute_cors()
+  #   fdr_thresh: significance threshold on FDR (default 0.25)
+  #   outdir: directory to write the PDF (default "figs")
+  # Output:
+  #   list with:
+  #     summary: tibble of per-drug counts and mean correlation by direction
+  #     plot: ggplot object (or NULL if no significant results)
   if (nrow(cor_tbl) == 0L) return(list(summary = tibble(), plot = NULL))
   corsummary <- cor_tbl %>%
     dplyr::filter(is.finite(.data$fdr), !is.na(.data$fdr), .data$fdr < fdr_thresh) %>%
@@ -221,30 +286,30 @@ summarize_correlated_features <- function(cor_tbl, fdr_thresh = 0.25, outdir = "
   list(summary = corsummary, plot = p)
 }
 
+
 # ---------------------------
-# Main wrapper
+# Drug-only analysis stage
 # ---------------------------
-analyze_modality <- function(
-    fits,
-    df_long,
-    sample_col,        # e.g., "Specimen"
-    feature_col,       # e.g., "feature_id" | "Gene" | "site"
-    value_col,         # e.g., "correctedAbundance"
-    metric = "uM_viability",    # Or fit_auc
-    outdir = "figs",
-    heatmap_filename = "drug_heatmap_large.pdf",
-    fdr_thresh = 0.25
+analyze_drug_response <- function(
+    #   Drug-only workflow:
+  #   - builds sample x drug matrix for a metric
+  #   - writes drug summary plots (most_efficacious, most_variable)
+  #   - writes drug heatmap (by default) for drugs measured in all samples
+  # Inputs:
+  #   fits: long drug response table
+  #   metric: drug response metric to analyze (default "uM_viability")
+  #   outdir: output directory for plots (default "figs")
+  #   heatmap_filename: filename for drug heatmap PDF; set NULL to skip
+  # Output:
+  #   list containing:
+  #     drug_mat, drug_summary, p_eff, p_var
+  fits,
+  metric = "uM_viability",
+  outdir = "figs",
+  heatmap_filename = "drug_heatmap_large.pdf"
 ) {
 
-  shared_ids <- base::intersect(unique(fits$improve_sample_id), unique(df_long[[sample_col]]))
-
-  feat_mat <- make_feature_matrix(
-    df_long = df_long,
-    shared_ids = shared_ids,
-    sample_col = sample_col,
-    feature_col = feature_col,
-    value_col = value_col
-  )
+  dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
 
   # Drug matrix for the metric
   drug_mat <- make_drug_matrix(
@@ -256,11 +321,12 @@ analyze_modality <- function(
     metric_col  = "dose_response_metric"
   )
 
-  # Summaries & heatmap
+  # Summaries (writes most_efficacious.pdf + most_variable.pdf)
   dsum <- summarize_drugs(
     fits, metric = metric, metric_col = "dose_response_metric", outdir = outdir
   )
 
+  # Heatmap (by default)
   if (!is.null(heatmap_filename) && nrow(drug_mat) > 0 && ncol(drug_mat) > 0) {
     fulldrugs <- dsum$summary %>%
       dplyr::filter(.data$nMeasured == nrow(drug_mat)) %>%
@@ -279,6 +345,55 @@ analyze_modality <- function(
     }
   }
 
+  list(
+    drug_mat     = drug_mat,
+    drug_summary = dsum$summary,
+    p_eff        = dsum$p_eff,
+    p_var        = dsum$p_var
+  )
+}
+
+
+# ---------------------------
+# Modality-only analysis stage
+# ---------------------------
+analyze_modality_correlations <- function(
+    #   Modality-only workflow:
+  #   - aligns samples shared between drug_mat and omics table
+  #   - builds sample x feature matrix
+  #   - computes drug-feature Spearman correlations + p-values + FDR
+  #   - summarizes significant features per drug and writes a summary plot
+  # Inputs:
+  #   df_long: long omics table for one modality
+  #   sample_col: sample ID column name in df_long (e.g., "Specimen")
+  #   feature_col: feature ID column name in df_long (e.g., "feature_id" or "Gene")
+  #   value_col: numeric value column name in df_long (e.g., "correctedAbundance")
+  #   drug_mat: sample x drug matrix (rownames = sample IDs)
+  #   outdir: output directory for plots (default "figs")
+  #   fdr_thresh: FDR cutoff used for correlation summary (default 0.25)
+  # Output:
+  #   list containing feat_mat, cor_tbl, cor_summary, cor_plot, shared_ids
+  df_long,
+  sample_col,
+  feature_col,
+  value_col,
+  drug_mat,
+  outdir = "figs",
+  fdr_thresh = 0.25
+) {
+
+  dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+  shared_ids <- base::intersect(rownames(drug_mat), unique(df_long[[sample_col]]))
+
+  feat_mat <- make_feature_matrix(
+    df_long = df_long,
+    shared_ids = shared_ids,
+    sample_col = sample_col,
+    feature_col = feature_col,
+    value_col = value_col
+  )
+
   # Correlations
   shared_after <- base::intersect(rownames(drug_mat), rownames(feat_mat))
   cor_tbl <- if (length(shared_after) > 0L) {
@@ -290,12 +405,70 @@ analyze_modality <- function(
   cor_res <- summarize_correlated_features(cor_tbl, fdr_thresh = fdr_thresh, outdir = outdir)
 
   list(
-    drug_mat    = drug_mat,
     feat_mat    = feat_mat,
     shared_ids  = shared_ids,
     cor_tbl     = cor_tbl,
     cor_summary = cor_res$summary,
-    cor_plot    = cor_res$plot,
-    drug_summary = dsum$summary
+    cor_plot    = cor_res$plot
+  )
+}
+
+
+# ---------------------------
+# Main wrapper (backwards compatible)
+# ---------------------------
+analyze_modality <- function(
+    #   End-to-end wrapper for running one omics modality:
+  #   - runs drug-only analysis (drug_mat + drug plots + heatmap)
+  #   - runs modality-only correlations (feat_mat + cor_tbl + summary plot)
+  # Inputs:
+  #   fits: long drug response table (must include improve_sample_id, improve_drug_id, dose_response_metric, dose_response_value)
+  #   df_long: long omics table for one modality
+  #   sample_col: sample ID column name in df_long (e.g., "Specimen")
+  #   feature_col: feature ID column name in df_long (e.g., "feature_id" or "Gene")
+  #   value_col: numeric value column name in df_long (e.g., "correctedAbundance")
+  #   metric: drug response metric to analyze (default "uM_viability")
+  #   outdir: output directory for plots (default "figs")
+  #   heatmap_filename: filename for drug heatmap PDF; set NULL to skip
+  #   fdr_thresh: FDR cutoff used for correlation summary (default 0.25)
+  # Output:
+  #   list containing matrices, correlation results, summaries, and (optionally) plot objects:
+  #     drug_mat, feat_mat, shared_ids, cor_tbl, cor_summary, cor_plot, drug_summary
+  fits,
+  df_long,
+  sample_col,        # e.g., "Specimen"
+  feature_col,       # e.g., "feature_id" | "Gene" | "site"
+  value_col,         # e.g., "correctedAbundance"
+  metric = "uM_viability",    # Or fit_auc
+  outdir = "figs",
+  heatmap_filename = "drug_heatmap_large.pdf",
+  fdr_thresh = 0.25
+) {
+
+  drug_res <- analyze_drug_response(
+    fits = fits,
+    metric = metric,
+    outdir = outdir,
+    heatmap_filename = heatmap_filename
+  )
+
+  mod_res <- analyze_modality_correlations(
+    df_long = df_long,
+    sample_col = sample_col,
+    feature_col = feature_col,
+    value_col = value_col,
+    drug_mat = drug_res$drug_mat,
+    outdir = outdir,
+    fdr_thresh = fdr_thresh
+  )
+
+  list(
+    drug_mat     = drug_res$drug_mat,
+    feat_mat     = mod_res$feat_mat,
+    shared_ids   = mod_res$shared_ids,
+    cor_tbl      = mod_res$cor_tbl,
+    cor_summary  = mod_res$cor_summary,
+    cor_plot     = mod_res$cor_plot,
+    drug_summary = drug_res$drug_summary
   )
 }
