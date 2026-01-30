@@ -18,7 +18,7 @@ library(tidyr)
 First we need to downlod the summary stats for each organoid .
 
 ```{r download, warning=FALSE}
-source('cNF_helper_code.R')
+source('00_cNF_helper_code.R')
 
 fits<-readr::read_tsv(synGet('syn69947322')$path)
 

@@ -1,0 +1,188 @@
+---
+title: "Analyze Modality Correlations"
+author: "Jeremy Jacobson"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+---
+
+### Purpose  
+  
+This notebook is designed to take the drug viability data and the long-format omics tables (RNA, global, and phospho), then compute and plot correlations between drug response and molecular features. These long-format omics tables are batch corrected when necessary and have been returned from the Normalize Omics Notebook.  
+  
+The `analyze_modality` will load the inputs from Synapse, build the matrices, save the plots, and return the correlation results so we can quickly inspect them. This markdown file also uses a `pdf_to_png_if_possible` function to help display the plots directly in the knitted markdown file.  
+
+### Get Helper Scripts  
+
+These scripts contain the functions that we will call below.  
+
+- 00_cNF_helper_code.R is a basic helper script (Synapse helpers, metadata, and shared utilities).  
+- 02_analyze_modality_correlations.R contains the code for building matrices, plotting summaries, and computing correlations.  
+  
+```{r initiate, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Set your directory to the cNFDrugScreening base directory if source is not working
+# knitr::opts_knit$set(root.dir = "path_to_cNFDrugScreening")
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+source("../source/00_cNF_helper_code.R")
+source("../source/02_analyze_modality_correlations.R")
+```
+
+## Load in Data  
+  
+These are the four main inputs we need. Drug viability plus the three long-format omics tables.  
+  
+```{r load, echo=TRUE, results='hide', message=FALSE, warning=FALSE, cache=TRUE}
+# Drugs
+drugs <- readr::read_tsv(synGet("syn69947322")$path)
+
+# RNA 
+rlong <- readr::read_csv(synGet("syn71333780")$path)
+
+# Global
+glong <- readr::read_csv(synGet("syn70078416")$path)
+
+# Phospho
+plong <- readr::read_csv(synGet("syn70078415")$path)
+```
+
+## Run correlations per modality  
+  
+Below, we run the same workflow three times, once per modality. The only thing that changes is which omics table we use and which column identifies the feature.  
+  
+The RNA step calls `analyze_modality()` (end-to-end) which:  
+- Builds a sample x drug matrix and a sample x feature matrix.  
+- Saves drug summary plots to the output directory (most_efficacious, most_variable, and the heatmap).  
+- Computes Spearman correlations between drug response and molecular features.  
+- Returns the results as a list so we can inspect them directly in R.  
+
+For global and phospho, we call `analyze_modality_correlations()` only, which:  
+- Reuses the drug matrix from the RNA run.  
+- Builds the sample x feature matrix for that modality.  
+- Computes Spearman correlations between drug response and molecular features.  
+- Saves the correlation feature summary plot.  
+  
+A few plot notes (these get written to `outdir`):  
+- **most_efficacious.pdf**: drugs with the lowest mean viability across samples. This is basically a "top hits" plot.  
+- **most_variable.pdf**: drugs with the highest variability across samples. These are the ones that may be more sample-dependent.  
+- **drug_heatmap_large_viability.pdf**: a large sample-by-drug heatmap, but only for drugs measured in all samples. This is useful for clustering and spotting outliers. Samples/patients are separated by lines, within each are 1-3 tumors.  
+- **cor_features_by_drug.pdf**: counts of significant correlated features per drug (split by direction). This is a quick way to see which drugs have real signal in this modality.  
+  
+**Note**: `most_efficacious`, `most_variable`, and `drug_heatmap_large_viability` are based on the drug response table, not the omics table.  
+They get recreated on every end-to-end run, but they are the same plots. Because of that, we run the end-to-end workflow once (RNA), and then for global/phospho we only run the modality-only correlation step.  
+
+**Note 2:** The end-to-end `analyze_modality` function may take a long time to run (~30-45 min).  
+  
+### RNA  
+
+```{r rna, echo=TRUE, results='hide', message=FALSE, warning=FALSE, cache=TRUE}
+corr_rna <- analyze_modality(
+  fits        = drugs,            
+  df_long     = rlong,           
+  sample_col  = "Specimen",
+  feature_col = "feature_id",
+  value_col   = "correctedAbundance",
+  metric      = "uM_viability",
+  heatmap_filename = "rna_drug_heatmap_large_viability.pdf",
+  outdir = "new_figs"
+)
+
+# Copy the shared filenames to RNA-specific names so later modalities don't overwrite what we want to show here
+dir.create("new_figs", showWarnings = FALSE, recursive = TRUE)
+file.copy("new_figs/most_efficacious.pdf", "new_figs/rna_most_efficacious.pdf", overwrite = TRUE)
+file.copy("new_figs/most_variable.pdf",   "new_figs/rna_most_variable.pdf",   overwrite = TRUE)
+file.copy("new_figs/cor_features_by_drug.pdf", "new_figs/rna_cor_features_by_drug.pdf", overwrite = TRUE)
+```
+
+  
+For RNA, the “features” are the rows we test in the correlation step, and they come directly from the `feature_id` column in the RNA long table (`rlong`). In most cases `feature_id` is a gene ID (or a transcript ID, depending on how the RNA file was generated). The workflow builds a sample × feature matrix from RNA, then correlates every RNA feature against drug viability for each drug.  
+  
+If a drug shows a large number of significant RNA correlations (after FDR filtering), that is a strong sign the RNA signal is tracking response for that drug. In other words, the transcriptome is separating the sensitive vs resistant samples for that drug in a consistent way.  
+  
+Below are the plots I show right after running RNA. This is the only place I show the drug-only plots, because those are based on the drug response table and are essentially the same no matter which omics table we are using.  
+  
+**Positive Correlation** indicates a **higher viability** which means that there is **lower effect** of the drug / **higher resistance** to the drug.  
+  
+**Negative Correlation** indicates a **lower viability** which means that there is **greater effect** of the drug / **higher sensitivity** to the drug.  
+  
+Metric used: `uM_viability`  
+    
+Files shown for RNA:  
+- new_figs/rna_most_efficacious.pdf  
+- new_figs/rna_most_variable.pdf  
+- new_figs/rna_drug_heatmap_large_viability.pdf  
+- new_figs/rna_cor_features_by_drug.pdf  
+  
+
+```{r rna_plots, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6.5, fig.width=10, out.width="95%", cache=TRUE}
+
+show_plots(c(
+  "new_figs/rna_most_efficacious.pdf",
+  "new_figs/rna_most_variable.pdf",
+  "new_figs/rna_drug_heatmap_large_viability.pdf",
+  "new_figs/rna_cor_features_by_drug.pdf"
+), dpi = 220)
+```
+
+### Global Proteomics
+
+```{r global, echo=TRUE, results='hide', message=FALSE, warning=FALSE, cache=TRUE}
+corr_global <- analyze_modality_correlations(
+  df_long     = glong,           
+  sample_col  = "Specimen",
+  feature_col = "Gene",
+  value_col   = "correctedAbundance",
+  drug_mat    = corr_rna$drug_mat,
+  outdir      = "new_figs",
+  fdr_thresh  = 0.25
+)
+
+# Copy the shared filenames to global-specific names
+file.copy("new_figs/cor_features_by_drug.pdf", "new_figs/global_cor_features_by_drug.pdf", overwrite = TRUE)
+```
+
+For global proteomics, the features are proteins. In theory, these may be closer to the phenotype than RNA.  
+
+Global correlation plot  
+  
+```{r global_plots, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6.5, fig.width=10, out.width="95%", cache=TRUE}
+show_plots(c(
+  "new_figs/global_cor_features_by_drug.pdf"
+), dpi = 220)
+```
+  
+### Phospho Proteomics  
+  
+```{r phospho, echo=TRUE, results='hide', message=FALSE, warning=FALSE, cache=TRUE}
+corr_phospho <- analyze_modality_correlations(
+  df_long     = plong,           
+  sample_col  = "Specimen",
+  feature_col = "site",
+  value_col   = "correctedAbundance",
+  drug_mat    = corr_rna$drug_mat,
+  outdir      = "new_figs",
+  fdr_thresh  = 0.25
+)
+
+# Copy the shared filenames to phospho-specific names
+file.copy("new_figs/cor_features_by_drug.pdf", "new_figs/phospho_cor_features_by_drug.pdf", overwrite = TRUE)
+```
+
+For phospho, the features are phosphorylation sites. It is normal for this to be noisier and higher-dimensional, but when a drug shows a cluster of correlated sites, it can be really informative for the mechanism - however, there is just one correlation here with 2 features.
+
+Here is the phospho correlation plot - for some reason, this one doesn't always knit correctly, so I'm adding the table too.  
+  
+```{r phospho_plots, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6.5, fig.width=10, out.width="95%", cache=TRUE}
+show_plots(c(
+  "new_figs/phospho_cor_features_by_drug.pdf"
+), dpi = 220)
+```
+
+
+  
+```{r}
+corr_phospho$cor_summary
+```

@@ -1,0 +1,222 @@
+---
+title: "Normalize Omics And Batch Correct"
+author: "Jeremy Jacobson"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+---
+
+### Purpose
+
+This notebook is designed to process multiple batches from transcriptomics, proteomics, and phosphoproteomics data.
+
+In its simplest form, it will load the data in from synapse and join it together in a single matrix. Additional options include batch correction (needed for global proteomics and phosphoproteomics), batch correction plots (before and after), and uploading the data back to synapse.  
+
+### Get Helper Scripts
+
+These scripts contain the functions that we will call below.  
+- 00_cNF_helper_code.R is a basic script that pulls data and sets colors for samples.  
+- 01_normalize_batchcorrect_omics.R contains all of the code for retrieving batches from synapse,
+  performing batch correction, plotting, and uploading.  
+  
+  
+```{r initiate, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+library(synapser)
+syn <- list(get = synapser::synGet, store = synapser::synStore)
+
+# Load helper metadata (00_cNF_helper_code.R defines 'meta' and 'pcols')
+source("../source/00_cNF_helper_code.R")
+
+# Source the pipeline
+source("../source/01_normalize_batchcorrect_omics.R")
+
+```
+
+## Run Batch Correction/Normalization across RNA, Global and Phospho Data.
+
+#### Clean Data
+Here are the IDs of several samples that were used for protocol optimization but not designed as experimental samples.
+We want to remove these from the subsequent batch correction steps as they could skew the "real" results.
+- Add to this list if more protocol optimization, contaminated samples or anything else we want to remove is present.  
+
+```{r}
+# Substrings to drop (These were the protocol optimization samples)
+drop_subs <- c(
+  "cNF_organoid_DIA_G_02_11Feb25",
+  "cNF_organoid_DIA_G_05_11Feb25",
+  "cNF_organoid_DIA_G_06_11Feb25",
+  "cNF_organoid_DIA_P_02_29Jan25",
+  "cNF_organoid_DIA_P_05_11Feb25",
+  "cNF_organoid_DIA_P_06_11Feb25"
+)
+
+```
+
+#### The Main Function
+
+We use `run_modality()` to perform all of the described steps.  
+
+**Brief Summary**:  
+
+- Input: We assign batches to the synapse files using the `batches` vector along with several other descriptive details / params.  
+- Output: We get out a combined matrix of data that is (optionally) batch corrected.  
+
+**Reference guide**:  
+
+##### Inputs 
+
+- modality: "global", "phospho", or "rna" 
+- batches : list of batch configs, e.g.   
+
+  - list(
+    list(syn_id="syn...", cohort=1, value_start_col=5, fname_aliquot_index=8),
+    list(syn_id="syn...", cohort=2, value_start_col=5, fname_aliquot_index=9)
+    )  
+  
+  - Required per batch:  
+    - syn_id  : Synapse file ID for the wide feature×sample table  
+    - cohort  : cohort/batch label (used for joining + ComBat)  
+    - fname_aliquot_index: token index (split on "_") used to parse aliquot from sample headers  
+  
+  - Optional per batch:  
+    - value_start_col: first sample column index (auto-detected if omitted)  
+  
+- meta: sample metadata joined by (aliquot, cohort); used to populate Specimen/Patient/Tumor  
+- syn: synapser client  
+  
+##### Options  
+  
+- drop_name_substrings: regex pattern(s) to drop unwanted sample columns  
+- out_dir / out_prefix / save_basename: control output file locations/names  
+- write_outputs: write CSV/PDF (+upload) vs return in-memory only  
+- upload_parent_id: Synapse folder/project ID for uploads  
+- pcols: optional named colors for PCA (Patient -> color)  
+- do_batch_correct: run ComBat (TRUE) or skip (FALSE)  
+  
+##### What it does  
+  
+- Normalizes each batch (per modality), combines batches on shared features, optionally runs ComBat by cohort, then exports long tables + PCA/hist plots.  
+  
+##### Returns  
+  
+- SummarizedExperiments: se_batches, se_combined, se_post (and se_corrected if ComBat ran)  
+- Long tables: long_pre, long_post  
+- PCA data + plots: pca_df_pre/post, plots  
+  
+### RNA Batches  
+  
+I am starting with the RNA batches as these are the simplest ones, not actually requiring batch correction (seen in the plot titled "rna samples" after the code runs).  
+
+I'm going to describe the `batches` vector/argument that is required by the `run_modality` script here.  
+  
+- A different version of this is needed when more batches are present, omics changes, or the files are modified.  
+- Each file (even within omics type) may be formatted slightly differently so `value_start_col` and `fname_aliquot_index` may need to be set differently between batches.  
+  
+For the rna_batches vector, files are formatted identically so the `value_start_col` are both set to 3 and `fname_aliquot_index` is NULL.  
+  
+- **value_start_col**: First column where data begins.  
+- **fname_aliquot_index**: aliquot index (not used in RNA)  
+- **cohort**: this variable is used to set the batch number.  
+  
+This code is also written to handle different name formats in the headers such as NF0018.T1.organoid, NF0018.T1.tissue, NF0018.skin, NF0018.T2.organoids, NF0018.T2, NF0018.T3.organoids, NF0018.T3. ie: organoid vs organoids, or mixed up capitalization.  
+  
+
+```{r rna, message=FALSE, warning=FALSE, fig.height=3.5, fig.width=6, out.width="50%"}
+rna_batches <- list(
+  list(syn_id = "syn66352931", cohort = 1, value_start_col = 3, fname_aliquot_index = NULL),
+  list(syn_id = "syn70765053", cohort = 2, value_start_col = 3, fname_aliquot_index = NULL)
+)
+
+rna <- run_modality(
+  modality = "rna",
+  batches  = rna_batches,
+  meta     = meta,
+  syn      = syn,
+  drop_name_substrings = drop_subs,
+  out_dir          = "rna_test",
+  out_prefix       = "rna",
+  upload_parent_id = "syn71099587",
+  pcols            = pcols,
+  write_outputs    = FALSE,     # This has already been run so we don't need to write it again unless something changes.
+  save_basename    = "RNA_12_no_batch_correct",
+  do_batch_correct = FALSE      #Note this is set to false right now. Doesn't appear to be needed for RNA 
+)
+```
+In the plots above, we see that no batch correction was required or performed.  
+  
+### Global Proteomic Batches  
+  
+Okay, now we are moving on to global proteomics. This is run in the same functional method as the RNA data. We set our batch info, assign modality and other basic info in `run_modality` and then we run it. Again, we don't upload the data (by default atleast). However, we do batch correct here - the reason why can be seen in the before and after plots.  
+  
+Here we do use the `fname_aliquot_index` variable in batches. This essentially splits by underscore and takes the Xth value  
+  
+Example for exp2 where fname_aliquot_index is 6:  
+  
+- `D:\DMS_WorkDir1\cNF_organoid_exp2_DIA_G_**01**_01May25_Romulus_BEHCoA-25-02-16.mzML`: 01  
+- `D:\DMS_WorkDir1\cNF_organoid_exp2_DIA_G_**02**_01May25_Romulus_BEHCoA-25-02-16.mzML`: 02   
+
+  
+```{r global, message=FALSE, warning=FALSE, fig.height=3.5, fig.width=6, out.width="50%"}
+global_batches <- list(
+  list(syn_id = "syn69947355", cohort = 1, value_start_col = 5, fname_aliquot_index = 5),
+  list(syn_id = "syn69947352", cohort = 2, value_start_col = 5, fname_aliquot_index = 6)
+)
+
+global <- run_modality(
+  modality = "Global",
+  batches  = global_batches,
+  meta     = meta,
+  syn      = syn,
+  drop_name_substrings = drop_subs,
+  out_dir          = "global_test",
+  out_prefix       = "global",
+  upload_parent_id = "syn70078365",
+  pcols            = pcols,
+  write_outputs    = FALSE,     # This has already been run so we don't need to write it again unless something changes.
+  save_basename    = "global_batch12_corrected",
+  do_batch_correct = TRUE
+)
+
+
+```
+  
+Above we can see that the batch correction was successfully performed for the global proteomic data. If anything changes or if new batches are added, we can set write_outputs to TRUE and rerun.  
+
+### Phospho Proteomic Batches    
+  
+Finally, we run this same process for Phosphoproteomics. Again the run_modality function is used, although the batch info and params are updated. After this code is run, we will see that batch correction was required and that it ran successfully.  
+  
+Again we use the `fname_aliquot_index` variable in batches. This essentially splits by underscore and takes the Xth value.  
+  
+Example for exp1 where fname_aliquot_index is 8:  
+  
+- `I:\UserData\LeDay\Piehowski_orgonoids_Feb25\RawData\1338217_cNF_organoid_DIA_P_**04**_29Jan25_Ned_BEHCoA-25-01-02.raw`: 04  
+- `I:\UserData\LeDay\Piehowski_orgonoids_Feb25\RawData\1338241_cNF_organoid_DIA_P_**01**_29Jan25_Ned_BEHCoA-25-01-02.raw`: 01  
+  
+
+
+```{r phospho, message=FALSE, warning=FALSE, fig.height=3.5, fig.width=6, out.width="50%"}
+phospho_batches <- list(
+  list(syn_id = "syn69963552", cohort = 1, value_start_col = 7, fname_aliquot_index = 8),
+  list(syn_id = "syn69947351", cohort = 2, value_start_col = 7, fname_aliquot_index = 9)
+)
+
+phospho <- run_modality(
+  modality = "Phospho",
+  batches  = phospho_batches,
+  meta     = meta,
+  syn      = syn,
+  drop_name_substrings = drop_subs,
+  out_dir          = "phospho_test",
+  out_prefix       = "phospho",
+  upload_parent_id = "syn70078365",
+  pcols            = pcols,
+  write_outputs    = FALSE, # This has already been run so we don't need to write it again unless something changes.
+  save_basename    = "phospho_batch12_corrected",
+  do_batch_correct = TRUE
+)
+
+```
+
