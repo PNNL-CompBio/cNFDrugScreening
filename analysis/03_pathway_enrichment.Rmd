@@ -1,8 +1,7 @@
 ---
 title: "Pathway Enrichment"
 author: "Jeremy Jacobson"
-date: "2025-11-12"
-output: html_document
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
 ---
 
 ### Purpose 
@@ -37,8 +36,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-source("../00_cNF_helper_code.R")
-source("../03_leapr_biomarker.R")
+source("../source/00_cNF_helper_code.R")
+source("../source/03_leapr_biomarker.R")
 ```
 
 ## Load in Data 
@@ -61,7 +60,7 @@ plong <- readr::read_csv(synGet("syn70078415")$path)
 
 ## Run Pathway Enrichment for Each Omics Modality 
   
-Below, we run the same workflow three times, once per modality. The main things that change are:  
+Below, we run the same workflow three times, once per (omics) modality. The main things that change are:  
 - which omics table we use 
 - which column represents the feature 
 - which geneset library we test (krbpaths vs kinasesubstrates) 
@@ -188,7 +187,7 @@ save_leapr_plots(
 )
 ```
 
-Here are the phospho pathway plots
+Here are the phospho pathway plots. For mirdametinib and olaparib, no significant pathways are seen for the phospho data using drug viability.
   
 ```{r phospho_plots, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6.5, fig.width=10, out.width="50%", cache=TRUE}
 phospho_plot_paths <- c(
@@ -200,7 +199,22 @@ phospho_plot_paths <- c(
 
 show_plots(phospho_plot_paths, dpi = 240)
 ```
-  
+
+Overall we can see that the number of drugs with significant pathways vary significantly by omics type. RNA demonstrates 231, Global proteomics has 167, while phosphoproteomics only shows 44 with just 1-4 effected pathways per drug.
+
+```{r sig_pathways_three_plots_paged, echo=TRUE, message=FALSE, warning=FALSE, fig.width=16, fig.height=6}
+alpha <- 0.05  #uses SignedBH_pvalue
+page_size <- 85 #number of drugs per plot. If too many, the names will overlap.
+plot_sig_pathways_one_omic_paged(res_bio_rna,    "rna",    alpha = alpha, page_size = page_size)
+plot_sig_pathways_one_omic_paged(res_bio_global, "global", alpha = alpha, page_size = page_size)
+plot_sig_pathways_one_omic_paged(res_bio_phospho,"phospho",alpha = alpha, page_size = page_size)
+
+```
+
+
+
+
+
 ## Notes 
   
 - If you want to force a full rerun (ignore cache), set `always_rerun = TRUE`.  

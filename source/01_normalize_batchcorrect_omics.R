@@ -57,7 +57,7 @@ modified_zscore <- function(x, na.rm = TRUE) {
   m  <- suppressWarnings(stats::median(x, na.rm = na.rm))
   md <- suppressWarnings(stats::mad(x, constant = 1, na.rm = na.rm))
   if (is.na(md) || md == 0) return(rep(0, length(x)))
-  0.6745 * (x - m) / md
+  0.6745 * (x - m) / md # used to convert mean absolute deviation to sd
 }
 
 filter_by_missingness <- function(mat) {
@@ -118,6 +118,9 @@ make_dropper <- function(substrings) {
 #   x: character vector of file paths
 # Output:
 #   character vector of basenames
+
+# NOTE: This is helpful because some "sample columns" are full Windows paths.
+
 basename_only   <- function(x) sub("^.*[\\\\/]", "", x)
 basename_no_ext <- function(x) sub("\\.[^.]+$", "", basename_only(x))
 
@@ -128,6 +131,10 @@ normalize_specimen_like <- function(x) {
   #   x: character vector
   # Output:
   #   character vector of normalized specimen-like strings
+
+  # This normalization exists because different sources encode specimen IDs
+  # in slightly different ways (e.g., "MN-2_T1_organoid" vs "MN.2 T1 Organoids").
+  # The goal is to make joins resilient to punctuation/spacing differences.
   y <- tolower(x)
   y <- gsub("\\s+", "", y)
   y <- gsub("\\.", "-", y)
@@ -149,6 +156,8 @@ parse_rna_header_triplet <- function(fnames) {
   #   fnames: character vector of RNA sample column names
   # Output:
   #   data.frame with columns: fname, sample_id, tumor, condition_raw, condition_norm, specimen_norm
+
+  #RNA headers don't have aliquot (unlike global and phospho)
   toks_list <- strsplit(fnames, "\\.")
   out <- lapply(seq_along(toks_list), function(i) {
     toks <- toks_list[[i]]
@@ -372,7 +381,7 @@ make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop
   # Output:
   #   SummarizedExperiment with assay "values" and populated colData/rowData
   all_candidate <- colnames(wide_df)[value_start_col:ncol(wide_df)]
-  has_pathy <- any(looks_like_sample_header(all_candidate))
+  has_pathy <- any(looks_like_sample_header(all_candidate)) # Use only path-like columns as sample measurements.
   if (has_pathy) {
     sample_cols <- all_candidate[looks_like_sample_header(all_candidate)]
     sample_cols <- setdiff(sample_cols, c("Site", "Sequence"))
@@ -385,6 +394,7 @@ make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop
 
   message(" Casting measurement block to numeric")
   raw_block <- wide_df[, sample_cols, drop = FALSE]
+  # Clean vals, coerce to numeric, keep original names.
   clean_block <- as.data.frame(
     lapply(raw_block, function(col) {
       if (is.factor(col)) col <- as.character(col)
@@ -393,7 +403,7 @@ make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop
     }),
     check.names = FALSE
   )
-
+  # Drop QC/blank samples by regex name patterns.
   keep <- !drop_name(colnames(clean_block))
   if (any(!keep)) {
     message(" Dropping unwanted sample columns by pattern: ", sum(!keep))
@@ -404,7 +414,7 @@ make_se <- function(wide_df, value_start_col, feature_ids, fnames_df, meta, drop
   mat <- as.matrix(clean_block)
   rownames(mat) <- feature_ids
   colnames(mat) <- sample_cols
-
+  # Sync metadata rows to kept sample columns.
   fnames_df <- fnames_df %>% dplyr::semi_join(data.frame(fname = sample_cols), by = "fname")
 
   parsed_df <- if (tolower(modality) == "rna") parse_rna_header_triplet(fnames_df$fname) else
@@ -560,6 +570,7 @@ combine_batches_intersection <- function(se_list) {
   #   SummarizedExperiment containing combined matrix and combined colData
   message("Combining batches (intersection of features, then cbind samples)")
   mats  <- lapply(se_list, function(se) as.matrix(SummarizedExperiment::assay(se, "values")))
+  # Keep shared features across batches for cbind.
   feats <- Reduce(intersect, lapply(mats, rownames))
   feats <- feats[!is.na(feats) & feats != ""]
   message("    - Intersection feature count: ", length(feats))
@@ -607,6 +618,7 @@ combat_by_cohort <- function(se) {
   mat[!is.finite(mat)] <- 0
 
   cd <- as.data.frame(SummarizedExperiment::colData(se))
+  # Align colData order to matrix column order.
   cd <- cd[colnames(mat), , drop = FALSE]
   if (!"cohort" %in% names(cd)) stop("colData must contain 'cohort' for ComBat batching.")
 

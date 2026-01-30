@@ -94,8 +94,8 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
     tidyr::pivot_wider(
       names_from  = !!rlang::sym(feature_col),
       values_from = !!rlang::sym(value_col),
-      values_fill = 0,
-      values_fn   = mean
+      values_fill = 0,    # Missing sample-feature pairs become zero after pivot.
+      values_fn   = mean     # Average duplicates per sample-feature before matrix conversion.
     ) %>%
     as.data.frame(check.names = FALSE)
 
@@ -189,7 +189,7 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
   if (is.null(map_site2gene) || !length(cor_named_vec)) return(cor_named_vec)
 
   # Align and drop unmapped
-  genes <- map_site2gene[names(cor_named_vec)]
+  genes <- map_site2gene[names(cor_named_vec)]   # Map each site ID to its gene symbol.
   keep  <- !is.na(genes) & genes != ""
   v     <- cor_named_vec[keep]
   g     <- genes[keep]
@@ -325,6 +325,10 @@ long_to_matrix <- function(df_long, sample_col, feature_col, value_col) {
 # Main
 # -----------------------------
 run_leapr_directional_one_cached <- function(
+
+  # Future Consideration:
+  # Consider using synapse to store results
+  #
   #   For each drug, correlate uM_viability with each omics feature across samples, split features
   #   into TOP (positive; more resistant) and BOTTOM (negative; more sensitive), then run leapR
   #   enrichment separately on each direction. Supports phospho-specific site->gene handling,
@@ -362,7 +366,7 @@ run_leapr_directional_one_cached <- function(
 
   # cache check! If the cached value exists, stop there.
   if (!always_rerun && is.character(cache_path) && nzchar(cache_path) && file.exists(cache_path)) {
-    load(cache_path) # loads res_list
+    load(cache_path) # Skip recompute by loading cached res_list from disk.
     if (exists("res_list")) return(res_list)
   }
 
@@ -517,7 +521,7 @@ run_leapr_directional_one_cached <- function(
 
     # BOTTOM (sensitive)
     if (length(neg) >= min_features) {
-      # flip sign so strong negatives rank to top
+      # Flip sign so strongest negatives rank highest.
       neg_flip <- -neg
       feats_bot <- names(neg_flip)
       se_bot <- .build_se_from_corvec(
@@ -651,4 +655,139 @@ save_leapr_plots <- function(
   }
 
   invisible(NULL)
+}
+
+
+
+#Extra plotting functions
+count_sig_pathways <- function(res_list, omic_label, alpha = 0.05, pcol = "SignedBH_pvalue") {
+  if (is.null(res_list) || !length(res_list)) return(tibble())
+
+  drugs <- names(res_list)
+  rows <- lapply(drugs, function(drug) {
+    two <- res_list[[drug]]
+    if (is.null(two)) return(NULL)
+
+    one_dir <- function(tbl, direction_label) {
+      if (is.null(tbl) || !nrow(tbl)) {
+        return(tibble(
+          omic_label = omic_label, drug = drug, direction = direction_label,
+          n_sig = 0L, n_total = 0L
+        ))
+      }
+
+      df <- as.data.frame(tbl)
+
+      # No fallback: require SignedBH_pvalue
+      if (!(pcol %in% colnames(df))) {
+        stop(sprintf(
+          "[count_sig_pathways] Column '%s' not found for drug='%s', omic='%s', direction='%s'. Columns: %s",
+          pcol, drug, omic_label, direction_label, paste(colnames(df), collapse = ", ")
+        ))
+      }
+
+      pv <- df[[pcol]]
+
+      # Robust whether SignedBH_pvalue is signed or not
+      tibble(
+        omic_label = omic_label,
+        drug = drug,
+        direction = direction_label,
+        n_sig = sum(!is.na(pv) & abs(pv) < alpha),
+        n_total = nrow(df)
+      )
+    }
+
+    bind_rows(
+      one_dir(two$top,    "Resistant (TOP)"),
+      one_dir(two$bottom, "Sensitive (BOTTOM)")
+    )
+  })
+
+  bind_rows(rows)
+}
+
+
+
+
+
+plot_sig_pathways_one_omic_paged <- function(res_list, omic_label, alpha = 0.05, page_size = 80) {
+  #   Plot (paged) bar charts of the number of significant enriched pathways per drug for a
+  #   single omics modality. Uses a fixed y-axis across all pages, orders drugs globally by
+  #   total significant pathways (desc), and splits drugs into pages to keep plots readable.
+  #   Each page is printed to the current graphics device.
+  # Inputs:
+  #   res_list: named list of per-drug enrichment results (typically output from leapR runs);
+  #            names(res_list) should be drug names/IDs, and each entry should contain TOP/BOTTOM
+  #            enrichment tables used by count_sig_pathways()
+  #   omic_label: character scalar label for the modality (e.g., "rna", "global", "phospho")
+  #   alpha: numeric significance threshold applied to pcol (default 0.05)
+  #   page_size: integer number of drugs to include per page (default 80)
+  # Output:
+  #   invisibly returns NULL; produces ggplot2 pages via print(p). If no significant pathways
+  #   are found, prints a message and returns invisibly.
+  df <- count_sig_pathways(res_list, omic_label, alpha = alpha, pcol = "SignedBH_pvalue")
+  if (!nrow(df)) return(invisible(NULL))
+
+  # total sig per drug and drop zeros
+  totals <- df %>%
+    group_by(drug) %>%
+    summarise(sig_total = sum(n_sig, na.rm = TRUE), .groups = "drop") %>%
+    filter(sig_total > 0) %>%
+    arrange(desc(sig_total), drug)
+
+  if (!nrow(totals)) {
+    message("[plot_sig_pathways_one_omic_paged] No drugs with significant pathways for omic='", omic_label, "'.")
+    return(invisible(NULL))
+  }
+
+  # Global ordering + paging
+  totals <- totals %>%
+    mutate(global_rank = row_number(),
+           page = ceiling(global_rank / page_size))
+
+  df2 <- df %>%
+    inner_join(totals, by = "drug")
+
+  # Fix y-axis across ALL pages for this omic
+  ymax <- max(df2$n_sig, na.rm = TRUE)
+  if (!is.finite(ymax) || ymax < 1) ymax <- 1
+
+  # Fixed drug order across all pages
+  ordered_drugs <- totals$drug
+  n_pages <- max(totals$page, na.rm = TRUE)
+
+  for (pg in seq_len(n_pages)) {
+    page_drugs <- totals %>% filter(page == pg) %>% pull(drug)
+
+    dpg <- df2 %>%
+      filter(page == pg) %>%
+      mutate(drug = factor(drug, levels = page_drugs))  # keep global order within page
+
+    p <- ggplot(dpg, aes(x = drug, y = n_sig, fill = direction)) +
+      geom_col(position = position_dodge(width = 0.85)) +
+      scale_y_continuous(
+        limits = c(0, ymax),
+        breaks = scales::pretty_breaks(n = 6)
+      ) +
+      labs(
+        title = paste0(
+          toupper(omic_label),
+          ": Significant enriched pathways per drug (|SignedBH_pvalue| < ", alpha, ")",
+          " - page ", pg, " of ", n_pages, " (", length(page_drugs), " drugs)"
+        ),
+        x = NULL,
+        y = "Number of significant pathways",
+        fill = NULL
+      ) +
+      theme_bw() +
+      theme(
+        axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1),
+        legend.position = "right"
+      )
+
+    print(p)
+  }
+
+  invisible(NULL) # This prevents NULL from appearing in the knitted resutls
 }

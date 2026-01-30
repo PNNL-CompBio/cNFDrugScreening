@@ -89,8 +89,8 @@ make_feature_matrix <- function(df_long, shared_ids, sample_col, feature_col, va
     tidyr::pivot_wider(
       names_from  = all_of(feature_col),
       values_from = all_of(value_col),
-      values_fill = 0,
-      values_fn   = mean
+      values_fill = 0, # Missing sample-feature pairs become zero for matrix.
+      values_fn   = mean   # Average duplicates per sample-feature after pivot.
     ) %>%
     as.data.frame(check.names = FALSE)
 
@@ -138,7 +138,7 @@ make_drug_matrix <- function(
     tidyr::pivot_wider(
       names_from  = all_of(drug_col),
       values_from = all_of(value_col),
-      values_fn   = mean
+      values_fn   = mean   # Average replicate drug responses per sample.
     ) %>%
     tibble::column_to_rownames(sample_col)
 }
@@ -223,7 +223,7 @@ compute_cors <- function(drug_mat, feat_mat, shared_samples = NULL) {
   drug_mat <- drug_mat[shared_samples, , drop = FALSE]
   feat_mat <- feat_mat[shared_samples, , drop = FALSE]
 
-  cres <- suppressWarnings(
+  cres <- suppressWarnings(   # Fast Spearman matrix using pairwise complete observations.
     stats::cor(drug_mat, feat_mat, use = "pairwise.complete.obs", method = "spearman")
   ) %>%
     as.data.frame() %>%
@@ -234,7 +234,7 @@ compute_cors <- function(drug_mat, feat_mat, shared_samples = NULL) {
     do.call(rbind, lapply(colnames(feat_mat), function(f) {
       dv <- drug_mat[, d]; fv <- feat_mat[, f]
       p <- NA_real_
-      if (sum(is.finite(dv) & is.finite(fv)) >= 3) {
+      if (sum(is.finite(dv) & is.finite(fv)) >= 3) { # Require ≥3 finite pairs for cor.test p-value.
         p <- tryCatch(
           stats::cor.test(dv, fv, method = "spearman", use = "pairwise.complete.obs")$p.value,
           error = function(e) NA_real_
@@ -328,7 +328,7 @@ analyze_drug_response <- function(
 
   # Heatmap (by default)
   if (!is.null(heatmap_filename) && nrow(drug_mat) > 0 && ncol(drug_mat) > 0) {
-    fulldrugs <- dsum$summary %>%
+    fulldrugs <- dsum$summary %>%     # Heatmap for only drugs measured in all samples.
       dplyr::filter(.data$nMeasured == nrow(drug_mat)) %>%
       pull(.data$improve_drug_id)
 
