@@ -337,7 +337,7 @@ analyze_drug_response <- function(
       pheatmap::pheatmap(
         as.matrix(subm),
         filename     = file.path(outdir, heatmap_filename),
-        width        = 28, height = 16,
+        width        = 32, height = 32,
         angle_col    = 45, fontsize_col = 6,
         cluster_rows = TRUE, cluster_cols = TRUE,
         show_rownames = TRUE, show_colnames = TRUE

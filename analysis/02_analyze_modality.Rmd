@@ -117,14 +117,14 @@ Files shown for RNA:
 - new_figs/rna_cor_features_by_drug.pdf  
   
 
-```{r rna_plots, echo=FALSE, message=FALSE, warning=FALSE, fig.height=6.5, fig.width=10, out.width="95%", cache=TRUE}
+```{r rna_plots, echo=FALSE, message=FALSE, warning=FALSE, fig.height=20, fig.width=20, out.width="95%", cache=TRUE}
 
 show_plots(c(
   "new_figs/rna_most_efficacious.pdf",
   "new_figs/rna_most_variable.pdf",
   "new_figs/rna_drug_heatmap_large_viability.pdf",
   "new_figs/rna_cor_features_by_drug.pdf"
-), dpi = 220)
+), dpi = 600)
 ```
 
 ### Global Proteomics
@@ -186,3 +186,59 @@ show_plots(c(
 ```{r}
 corr_phospho$cor_summary
 ```
+
+
+
+```{r consistent_efficacy, echo=TRUE, message=FALSE, warning=FALSE}
+# ------------------------------------------------------------
+# Consistently efficacious drugs
+# Definition:
+#   A drug is "consistently efficacious" if viability <= X in >= Y% of samples
+#   (optionally requiring the drug to be measured in at least N samples).
+#
+# Notes:
+# - Uses the long drug table `drugs` already loaded above.
+# - You can set X/Y/Nmin to match whatever you want to report in the abstract.
+# ------------------------------------------------------------
+
+library(dplyr)
+
+# ---- User-set parameters ----
+metric_use <- "uM_viability"  # or whatever metric label you're using
+X_viability_threshold <- 0.50  # viability cutoff (lower = more efficacious)
+Y_percent_required    <- 0.50 # fraction of samples required (e.g., 0.70 = 70%)
+Nmin_measured         <- 20   # minimum samples per drug (set to 1 to disable)
+
+# ---- Compute per-drug consistency ----
+drug_consistency <- drugs %>%
+  filter(dose_response_metric == metric_use) %>%
+  group_by(improve_drug_id) %>%
+  summarise(
+    n_measured = n(),  # rows after filtering metric (includes replicates if present)
+    n_samples  = n_distinct(improve_sample_id),
+    frac_below = mean(dose_response_value <= X_viability_threshold, na.rm = TRUE),
+    mean_viab  = mean(dose_response_value, na.rm = TRUE),
+    sd_viab    = sd(dose_response_value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(n_samples >= Nmin_measured) %>%
+  mutate(consistently_efficacious = frac_below >= Y_percent_required) %>%
+  arrange(desc(consistently_efficacious), mean_viab)
+
+# ---- Summary numbers (for quick copy/paste into abstract) ----
+n_total_drugs <- n_distinct(drug_consistency$improve_drug_id)
+n_consistent  <- sum(drug_consistency$consistently_efficacious, na.rm = TRUE)
+
+cat(sprintf(
+  "Consistently efficacious drugs (metric=%s): %d / %d meet viability <= %.3f in >= %.1f%% of samples (Nmin=%d)\n",
+  metric_use, n_consistent, n_total_drugs, X_viability_threshold, 100 * Y_percent_required, Nmin_measured
+))
+
+# ---- List the consistent drugs (top 25 by lowest mean viability) ----
+drug_consistency %>%
+  filter(consistently_efficacious) %>%
+  select(improve_drug_id, n_samples, frac_below, mean_viab, sd_viab) %>%
+  arrange(mean_viab) %>%
+  slice_head(n = 25)
+```
+

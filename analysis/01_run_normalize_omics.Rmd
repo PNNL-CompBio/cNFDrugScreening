@@ -123,7 +123,9 @@ For the rna_batches vector, files are formatted identically so the `value_start_
 This code is also written to handle different name formats in the headers such as NF0018.T1.organoid, NF0018.T1.tissue, NF0018.skin, NF0018.T2.organoids, NF0018.T2, NF0018.T3.organoids, NF0018.T3. ie: organoid vs organoids, or mixed up capitalization.  
   
 
-```{r rna, message=FALSE, warning=FALSE, fig.height=3.5, fig.width=6, out.width="50%"}
+```{r rna, message=FALSE, warning=FALSE, fig.height=3.5, fig.width=6, out.width="50%", fig.path="figs_for_sara/rna-"}
+dir.create("figs_for_sara", showWarnings = FALSE, recursive = TRUE)
+
 rna_batches <- list(
   list(syn_id = "syn66352931", cohort = 1, value_start_col = 3, fname_aliquot_index = NULL),
   list(syn_id = "syn70765053", cohort = 2, value_start_col = 3, fname_aliquot_index = NULL)
@@ -141,7 +143,7 @@ rna <- run_modality(
   pcols            = pcols,
   write_outputs    = FALSE,     # This has already been run so we don't need to write it again unless something changes.
   save_basename    = "RNA_12_no_batch_correct",
-  do_batch_correct = FALSE      #Note this is set to false right now. Doesn't appear to be needed for RNA 
+  do_batch_correct = TRUE      #Note this is set to false right now. Doesn't appear to be needed for RNA 
 )
 ```
 In the plots above, we see that no batch correction was required or performed.  

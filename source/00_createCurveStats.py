@@ -56,7 +56,7 @@ fulltab.to_csv('drug_response.tsv',sep='\t')
 ##fit curve
 script='https://raw.githubusercontent.com/PNNL-CompBio/coderdata/refs/heads/main/coderbuild/utils/fit_curve.py'
 subprocess.run(['wget',script])
-subprocess.run(['python','fit_curve.py','--input','drug_response.tsv','--output','cnfDrugOutput'])
+subprocess.run(['python3','fit_curve.py','--input','drug_response.tsv','--output','cnfDrugOutput'])
 
 
 #####now we can take single drug points and format those

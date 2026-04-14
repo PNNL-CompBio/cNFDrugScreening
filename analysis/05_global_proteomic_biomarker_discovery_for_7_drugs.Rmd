@@ -1,0 +1,1750 @@
+---
+title: "Targeted Biomarker Discovery for cNF Organoids"
+author: "Jeremy Jacobson"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+---
+
+# Overview
+
+This notebook performs multi-strategy biomarker discovery for 7 drugs of interest in cNF organoids:
+**Onalespib, Alvocidib, Mirdametinib, Selumetinib, Fimepinostat, Copanlisib, and Digoxin**.
+
+## Approach
+
+Standard FDR-corrected Spearman correlation finds very few significant hits at n=20 with 8,248 proteins (that pass the FDR filter of .25).
+Instead, we use three complementary statistical strategies and require biomarkers to pass 2 or more:
+
+1. **Spearman correlation** across all 20 samples
+2. **Extreme responder analysis** (Wilcoxon rank-sum, top 5 vs bottom 5)
+3. **Within-patient pairs** (paired Spearman, 6 patients with multiple tumors)
+
+Proteins passing all three are designated **triple-hits [3s]** — the highest-confidence tier.
+Proteins passing 2 strategies (shared across drugs) are designated **2-strategy recurrent [2s]**.
+
+All analysis uses **global proteomics only** (no RNA or phospho).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 10,
+  fig.height = 6,
+  out.width  = "95%",
+  cache      = TRUE
+)
+
+```
+
+# Setup & Data Loading
+
+```{r setup2, results='hide'}
+source("../source/00_cNF_helper_code.R")
+source("../source/02_analyze_modality_correlations.R")
+source("../source/03_leapr_biomarker.R")
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(pheatmap)
+library(readr)
+library(knitr)
+
+dir.create("biomarker_figs",   showWarnings = FALSE, recursive = TRUE)
+dir.create("biomarker_tables", showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r drugs_of_interest}
+drugs_of_interest <- c("Onalespib", "Alvocidib", "Mirdametinib", "Selumetinib",
+                       "Fimepinostat", "Copanlisib", "Digoxin")
+```
+
+```{r load_data, results='hide'}
+# Drug viability
+drugs <- readr::read_tsv(synGet("syn69947322")$path)
+
+# Global proteomics (batch corrected)
+glong <- readr::read_csv(synGet("syn70078416")$path)
+```
+
+```{r match_drug_names}
+all_drug_ids  <- unique(drugs$improve_drug_id)
+drug_id_upper <- toupper(all_drug_ids)
+doi_upper     <- toupper(drugs_of_interest)
+
+matched_ids <- sapply(doi_upper, function(d) {
+  hit <- all_drug_ids[drug_id_upper == d]
+  if (length(hit) == 0) hit <- all_drug_ids[grepl(d, drug_id_upper, fixed = TRUE)]
+  if (length(hit) == 0) return(NA_character_)
+  hit[1]
+})
+drugs_matched <- matched_ids[!is.na(matched_ids)]
+```
+
+```{r build_matrices}
+# Build full drug matrix (all 238 drugs)
+drug_mat_all <- make_drug_matrix(drugs, metric = "uM_viability")
+
+# Run global proteomics correlation to get feature matrix
+corr_global <- suppressWarnings(analyze_modality_correlations(
+  df_long     = glong,
+  sample_col  = "Specimen",
+  feature_col = "Gene",
+  value_col   = "correctedAbundance",
+  drug_mat    = drug_mat_all[, drugs_matched, drop = FALSE],
+  outdir      = "biomarker_figs",
+  fdr_thresh  = 0.25
+))
+
+# Shared samples + feature matrix for downstream analysis
+fm          <- as.matrix(corr_global$feat_mat)
+shared_val  <- intersect(rownames(drug_mat_all), rownames(fm))
+patient_val <- sub("_.*$", "", shared_val)
+```
+
+---
+
+# 1. Dataset Summary
+
+## 1.1 Sample and protein counts
+
+```{r sample_summary}
+cat(sprintf("Samples with proteomics + drug data: %d\n", length(shared_val)))
+cat(sprintf("Unique patients: %d\n", length(unique(patient_val))))
+cat(sprintf("Patients with 2+ tumors (paired analysis): %d\n",
+            sum(table(patient_val) >= 2)))
+cat(sprintf("Total proteins measured: %d\n", ncol(fm)))
+cat(sprintf("Total drugs in screen: %d\n", ncol(drug_mat_all)))
+cat(sprintf("Drugs tested in all 20 samples: %d\n",
+            sum(colSums(!is.na(drug_mat_all[shared_val, ])) == length(shared_val))))
+
+cat("\nSamples per patient:\n")
+print(table(patient_val))
+```
+
+## 1.2 Drugs of interest: class, potency, variability
+
+The 7 drugs of interest span 6 mechanism classes and the full range of variability seen in the
+screen — from Copanlisib (SD = 0.044, lowest in the panel) to Mirdametinib (SD = 0.21, top decile).
+The "N_Triple_Hits" column previews how many high-confidence biomarkers each drug yielded.
+
+```{r doi_table}
+drug_info <- data.frame(
+  Drug = drugs_of_interest,
+  Class = c("HSP90 inhibitor", "CDK inhibitor", "MEK inhibitor", "MEK inhibitor",
+            "Dual PI3K/HDAC inhibitor", "PI3K inhibitor", "Cardiac glycoside"),
+  Primary_Targets = c("HSP90a/b", "CDK9 (also CDK1/2/4/7)", "MEK1/2", "MEK1/2",
+                      "PI3Ka/d + HDAC1/2/3/10", "PI3Ka/d", "Na+/K+-ATPase"),
+  Mean_Viability = sapply(drugs_of_interest, function(d)
+    round(mean(drug_mat_all[shared_val, d], na.rm = TRUE), 3)),
+  SD_Viability = sapply(drugs_of_interest, function(d)
+    round(sd(drug_mat_all[shared_val, d], na.rm = TRUE), 3)),
+  N_Triple_Hits = c(13, 10, 21, 9, 19, 5, 6),
+  stringsAsFactors = FALSE
+) %>% arrange(SD_Viability)
+
+knitr::kable(drug_info, caption = "Drugs of Interest: class, potency, and biomarker yield")
+```
+
+## 1.3 Sample-level drug response heatmap
+
+Heatmap of viability across all 238 drugs × 20 samples grouped by patient. White cells = drug not
+tested in that sample. Drugs are ordered by median viability (left = most potent). The visualization
+shows two things at once: (1) a clear potent-drug cluster on the left side that kills nearly every
+sample, and (2) substantial within-patient variation across the middle of the drug panel where
+multiple-tumor patients (NF0017, NF0018, NF0019, NF0020, NF0025, NF0027) show different responses
+between tumors — the foundation for the Strategy 3 paired analysis.
+
+```{r drug_heatmap_all, fig.width=14, fig.height=14}
+sample_order <- shared_val[order(patient_val, shared_val)]
+patient_ordered <- sub("_.*$", "", sample_order)
+
+heat_mat <- drug_mat_all[sample_order, ]
+drug_medians <- apply(heat_mat, 2, median, na.rm = TRUE)
+heat_mat <- heat_mat[, names(sort(drug_medians))]
+
+patients_unique <- unique(patient_ordered)
+gap_positions <- cumsum(table(patient_ordered)[patients_unique])
+gap_positions <- gap_positions[-length(gap_positions)]
+
+row_anno <- data.frame(Patient = patient_ordered)
+rownames(row_anno) <- sample_order
+ann_colors <- list(Patient = pcols[patients_unique])
+
+pheatmap::pheatmap(
+  heat_mat,
+  color = colorRampPalette(c("steelblue", "lightyellow", "firebrick"))(100),
+  na_col = "white",
+  cluster_rows = FALSE, cluster_cols = FALSE,
+  gaps_row = as.integer(gap_positions),
+  annotation_row = row_anno, annotation_colors = ann_colors,
+  show_colnames = FALSE,
+  fontsize_row = 9, border_color = NA,
+  main = sprintf("Drug Response: %d Drugs × %d Samples\nWhite = not tested. Drugs ordered by median viability (left = most potent).",
+                 ncol(heat_mat), nrow(heat_mat)),
+  legend_breaks = c(0.25, 0.5, 0.75, 1.0, 1.25),
+  legend_labels = c("0.25", "0.5", "0.75", "1.0", "1.25\n\nViability"),
+  filename = "biomarker_figs/final_drug_viability_heatmap_all.pdf",
+  width = 14, height = 14
+)
+```
+
+## 1.4 Drug landscape: potency vs variability
+
+Each dot = 1 drug, x = mean viability, y = SD of viability. Drugs of interest are highlighted with
+white-fill rings and bold labels; other drugs are colored by class. The plot demonstrates that
+**drugs of interest span the full range of potency, variability, and mechanism** — Mirdametinib
+sits at high SD/moderate potency, Copanlisib is at very low SD, Onalespib clusters with the rest
+of the HSP90 inhibitors at moderate potency. This justifies treating each drug separately rather
+than expecting a single biomarker to apply across all of them.
+
+```{r drug_landscape, fig.width=12, fig.height=8}
+drug_stats <- data.frame(
+  drug = colnames(drug_mat_all),
+  mean_viab = apply(drug_mat_all[shared_val, ], 2, mean, na.rm = TRUE),
+  sd_viab   = apply(drug_mat_all[shared_val, ], 2, sd,   na.rm = TRUE),
+  stringsAsFactors = FALSE
+) %>% filter(is.finite(mean_viab), is.finite(sd_viab))
+
+class_map <- list(
+  "MEK" = c("Mirdametinib", "Selumetinib", "Trametinib", "Binimetinib",
+            "Cobimetinib", "Avutometinib", "Nedometinib"),
+  "HSP90" = c("Onalespib", "Tanespimycin", "Alvespimycin", "Ganetespib",
+              "Luminespib", "Retaspimycin", "SNX-2112", "SNX-5422",
+              "KW-2478", "CCT-018159", "Geldanamycin"),
+  "CDK" = c("Alvocidib", "Dinaciclib", "Palbociclib", "Ribociclib",
+            "Abemaciclib", "Trilaciclib", "Enitociclib", "Fadraciclib",
+            "THZ1", "JNJ-7706621"),
+  "PI3K/mTOR" = c("Copanlisib", "Alpelisib", "Omipalisib", "Apitolisib",
+                  "Bimiralisib", "Eganelisib", "Umbralisib", "Duvelisib",
+                  "NVP-BEZ235", "LY3023414", "Rapamycin", "Everolimus",
+                  "Temsirolimus", "Sapanisertib", "Vistusertib"),
+  "HDAC/BET" = c("Vorinostat", "Panobinostat", "Belinostat", "Romidepsin",
+                 "Entinostat", "Fimepinostat", "Molibresib", "Pelabresib")
+)
+
+drug_stats$drug_class <- "Other"
+for (cls in names(class_map)) {
+  drug_stats$drug_class[drug_stats$drug %in% class_map[[cls]]] <- cls
+}
+drug_stats$drug_class[drug_stats$drug == "Digoxin"] <- "Cardiac glycoside"
+drug_stats$is_doi <- drug_stats$drug %in% drugs_of_interest
+
+class_levels <- c("MEK", "HSP90", "CDK", "PI3K/mTOR", "HDAC/BET", "Cardiac glycoside", "Other")
+drug_stats$drug_class <- factor(drug_stats$drug_class, levels = class_levels)
+
+class_colors <- c("MEK" = "#1C92AB", "HSP90" = "#C53030", "CDK" = "#DD6B20",
+                  "PI3K/mTOR" = "#9F7AEA", "HDAC/BET" = "#276749",
+                  "Cardiac glycoside" = "#1C5D8F", "Other" = "grey75")
+
+drug_stats$label <- ifelse(drug_stats$is_doi, drug_stats$drug, "")
+
+p_landscape <- ggplot(drug_stats, aes(x = mean_viab, y = sd_viab)) +
+  geom_point(data = drug_stats %>% filter(drug_class == "Other"),
+             color = "grey75", alpha = 0.5, size = 2) +
+  geom_point(data = drug_stats %>% filter(drug_class != "Other" & !is_doi),
+             aes(color = drug_class), size = 2.8, alpha = 0.85) +
+  geom_point(data = drug_stats %>% filter(is_doi),
+             aes(color = drug_class), size = 4.5, alpha = 0.95,
+             stroke = 1.2, shape = 21, fill = "white") +
+  geom_point(data = drug_stats %>% filter(is_doi),
+             aes(color = drug_class), size = 3, alpha = 0.95) +
+  geom_text_repel(data = drug_stats %>% filter(is_doi),
+                  aes(label = label), size = 3.5, fontface = "bold",
+                  max.overlaps = 20, segment.color = "grey40",
+                  box.padding = 0.6, color = "grey20") +
+  scale_color_manual(values = class_colors, name = "Drug Class",
+                     breaks = c("MEK", "HSP90", "CDK", "PI3K/mTOR",
+                                "HDAC/BET", "Cardiac glycoside")) +
+  scale_x_continuous(limits = c(0, 1.25), breaks = seq(0, 1.25, 0.25)) +
+  scale_y_continuous(limits = c(0, 0.25), breaks = seq(0, 0.25, 0.05)) +
+  geom_vline(xintercept = 1.0, linetype = "dashed", color = "grey60", linewidth = 0.3) +
+  labs(
+    title = "Drug Landscape: Potency vs Variability",
+    subtitle = "Drugs of interest span the full range of potency, variability, and mechanism",
+    x = "Mean Viability (lower = more potent)",
+    y = "SD of Viability (response variability)"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "right",
+        legend.title = element_text(face = "bold"),
+        panel.grid.minor = element_blank())
+
+print(p_landscape)
+ggsave("biomarker_figs/final_drug_landscape_scatter.pdf", p_landscape, width = 12, height = 8)
+```
+
+## 1.5 Triple-hit summary per drug
+
+Compiled list of all 83 triple-hit protein-drug pairs across the 7 drugs of interest. Each row is
+a protein that passed all three statistical strategies for the given drug, with rho and direction
+(resistance = positive rho, sensitivity = negative rho).
+
+```{r triple_hit_table}
+combined <- do.call(rbind, lapply(drugs_of_interest, function(d) {
+  hits <- triple_detail %>% filter(drug == d)
+  if (nrow(hits) == 0) return(NULL)
+  hits$rho <- sapply(hits$feature, function(p) {
+    if (p %in% colnames(fm)) {
+      round(suppressWarnings(cor(drug_mat_all[shared_val, d], fm[shared_val, p],
+                                  method = "spearman", use = "pairwise.complete.obs")), 3)
+    } else { NA_real_ }
+  })
+  data.frame(
+    Drug = d, Protein = hits$feature, Rho = hits$rho,
+    Direction = ifelse(hits$rho > 0, "Resistance", "Sensitivity"),
+    stringsAsFactors = FALSE
+  )
+})) %>% arrange(Drug, desc(abs(Rho)))
+
+cat(sprintf("All triple-hit [3s] biomarkers: %d protein-drug pairs across %d drugs\n\n",
+            nrow(combined), length(unique(combined$Drug))))
+knitr::kable(combined, caption = "All triple-hit biomarkers per drug, sorted by |rho|")
+```
+
+---
+
+# 2. Multi-Strategy Discovery Approach
+
+## 2.1 Why three strategies are necessary
+
+Standard FDR-corrected Spearman with n=20 across 8,248 proteins requires |rho| ≥ 0.75 to survive
+correction. Very few single protein-drug pair achieves this bar. The multi-strategy consensus approach finds
+biomarkers that any single test would miss by requiring concordance across three independent tests
+that ask different questions of the same data: continuous correlation across all samples, extreme
+responder differences, and within-patient consistency.
+
+```{r strategy_helpers}
+# Helper: extreme responder analysis for one drug
+run_extreme_responders <- function(drug_id, drug_mat, feat_mat, n_extreme = 5) {
+  shared <- intersect(rownames(drug_mat), rownames(feat_mat))
+  if (!(drug_id %in% colnames(drug_mat))) return(NULL)
+  viab <- drug_mat[shared, drug_id]; viab <- viab[is.finite(viab)]
+  viab_sorted <- sort(viab)
+  sens <- names(viab_sorted)[1:n_extreme]
+  res  <- names(viab_sorted)[(length(viab_sorted) - n_extreme + 1):length(viab_sorted)]
+
+  results <- do.call(rbind, lapply(colnames(feat_mat), function(f) {
+    s_vals <- feat_mat[sens, f]; r_vals <- feat_mat[res, f]
+    if (all(is.na(s_vals)) || all(is.na(r_vals))) return(NULL)
+    if (sd(c(s_vals, r_vals), na.rm = TRUE) == 0) return(NULL)
+    wt <- suppressWarnings(wilcox.test(r_vals, s_vals, exact = FALSE))
+    data.frame(drug = drug_id, feature = f, pval = wt$p.value,
+               mean_sens = mean(s_vals, na.rm = TRUE),
+               mean_res = mean(r_vals, na.rm = TRUE),
+               direction = ifelse(mean(r_vals, na.rm = TRUE) > mean(s_vals, na.rm = TRUE),
+                                  "up_in_resistant", "up_in_sensitive"),
+               stringsAsFactors = FALSE)
+  }))
+  if (is.null(results)) return(NULL)
+  results$fdr <- p.adjust(results$pval, method = "BH")
+  results %>% arrange(pval)
+}
+
+# Helper: within-patient paired Spearman on deltas
+run_within_patient <- function(drug_id, drug_mat, feat_mat, sample_info, multi_patients) {
+  if (!(drug_id %in% colnames(drug_mat))) return(NULL)
+  pairs <- do.call(rbind, lapply(multi_patients, function(pat) {
+    samps <- sample_info$sample[sample_info$Patient == pat]
+    viabs <- drug_mat[samps, drug_id]; viabs <- viabs[is.finite(viabs)]
+    if (length(viabs) < 2) return(NULL)
+    most_sens <- names(which.min(viabs)); most_res <- names(which.max(viabs))
+    if (most_sens == most_res) return(NULL)
+    data.frame(patient = pat, sensitive = most_sens, resistant = most_res,
+               viab_diff = viabs[most_res] - viabs[most_sens],
+               stringsAsFactors = FALSE)
+  }))
+  if (is.null(pairs) || nrow(pairs) < 3) return(NULL)
+
+  feat_diffs <- sapply(colnames(feat_mat), function(f) {
+    feat_mat[pairs$resistant, f] - feat_mat[pairs$sensitive, f]
+  })
+  results <- apply(feat_diffs, 2, function(fd) {
+    if (all(is.na(fd)) || sd(fd, na.rm = TRUE) == 0) return(c(rho = NA, pval = NA))
+    ct <- suppressWarnings(cor.test(pairs$viab_diff, fd, method = "spearman", exact = FALSE))
+    c(rho = unname(ct$estimate), pval = unname(ct$p.value))
+  })
+  res_df <- as.data.frame(t(results)) %>% tibble::rownames_to_column("feature") %>%
+    dplyr::mutate(fdr = p.adjust(pval, method = "BH")) %>%
+    dplyr::arrange(pval)
+  res_df$drug <- drug_id
+  res_df
+}
+
+# Helper: format p-values for plot annotations
+fmt_p <- function(p) {
+  if (length(p) == 0 || !is.finite(p)) return("NA")
+  if (p < 0.001) return("<0.001")
+  sprintf("%.3f", p)
+}
+```
+
+## 2.2 Run all three strategies
+
+```{r run_strategies, cache=TRUE}
+# Strategy 1: Spearman correlation (already computed in corr_global)
+
+# Strategy 2: Extreme responders
+extreme_results <- list()
+for (d in drugs_matched) {
+  res <- run_extreme_responders(d, as.matrix(drug_mat_all), fm, n_extreme = 5)
+  if (!is.null(res)) extreme_results[[d]] <- res
+}
+extreme_all <- bind_rows(extreme_results)
+
+# Strategy 3: Within-patient pairs
+sample_info <- data.frame(sample = shared_val, Patient = patient_val,
+                          stringsAsFactors = FALSE)
+multi_patients <- sample_info %>% dplyr::count(Patient) %>%
+  filter(n >= 2) %>% pull(Patient)
+
+within_patient_results <- list()
+for (d in drugs_matched) {
+  res <- run_within_patient(d, as.matrix(drug_mat_all), fm, sample_info, multi_patients)
+  if (!is.null(res)) within_patient_results[[d]] <- res
+}
+```
+
+## 2.3 Identify triple-hit and 2-strategy recurrent proteins
+
+```{r identify_triples}
+hits_correlation <- corr_global$cor_tbl %>%
+  filter(drug %in% drugs_matched, pval < 0.05) %>%
+  select(drug, feature) %>% mutate(strategy = "correlation")
+
+hits_extreme <- extreme_all %>%
+  filter(pval < 0.05) %>%
+  select(drug, feature) %>% mutate(strategy = "extreme_responders")
+
+hits_within <- bind_rows(within_patient_results) %>%
+  filter(pval < 0.05) %>%
+  select(drug, feature) %>% mutate(strategy = "within_patient")
+
+all_hits <- bind_rows(hits_correlation, hits_extreme, hits_within)
+
+recurrent <- all_hits %>%
+  group_by(drug, feature) %>%
+  summarise(n_strategies = n_distinct(strategy),
+            strategies   = paste(unique(strategy), collapse = " + "),
+            .groups = "drop") %>%
+  arrange(desc(n_strategies), drug, feature)
+
+triple_detail <- recurrent %>% filter(n_strategies == 3)
+
+cat(sprintf("Triple-hit [3s] biomarkers: %d\n", nrow(triple_detail)))
+cat(sprintf("2-strategy [2s] recurrent: %d\n", sum(recurrent$n_strategies == 2)))
+
+write_csv(recurrent, "biomarker_tables/recurrent_hits_multi_strategy.csv")
+write_csv(triple_detail, "biomarker_tables/triple_hit_biomarkers.csv")
+```
+
+---
+
+# 3. Finding 1: HSP90 Chaperone Network (Onalespib + Cross-Drug)
+
+## 3.1 Rationale
+
+Onalespib yielded ST13 as a triple-hit biomarker. ST13 is a HSP70 co-chaperone that stabilizes
+the HSP70-HSP90 machinery. Independent discoveries from Alvocidib (NUDCD3) and Digoxin (DNAJC8)
+also identified co-chaperone proteins, suggesting a cross-drug chaperone resistance axis.
+We validated the full 7-protein chaperone panel across all 11 HSP90 inhibitors in the screen.
+
+## 3.2 ST13 vs Onalespib viability — all three strategies
+
+ST13 abundance correlates strongly with Onalespib viability (rho = 0.77), and the 
+three strategy p-values are annotated to make the multi-strategy concordance 
+explicit: nominal Spearman p, unpaired Wilcoxon p (extreme responders), and paired
+Spearman p (within-patient deltas). All three are significant at p < 0.05, qualifying ST13 as a
+triple-hit. Higher ST13 → higher viability → less drug effect.
+
+```{r st13_headline, fig.width=10, fig.height=7}
+# Pull the three strategy p-values from the discovery objects
+st13_cor_p <- corr_global$cor_tbl %>%
+  filter(drug == "Onalespib", feature == "ST13") %>%
+  pull(pval)
+st13_extreme_p <- extreme_all %>%
+  filter(drug == "Onalespib", feature == "ST13") %>%
+  pull(pval)
+st13_within_p <- within_patient_results[["Onalespib"]] %>%
+  filter(feature == "ST13") %>%
+  pull(pval)
+
+df_st13_main <- data.frame(
+  sample    = shared_val,
+  Patient   = patient_val,
+  viability = drug_mat_all[shared_val, "Onalespib"],
+  ST13      = fm[shared_val, "ST13"]
+) %>% filter(is.finite(viability), is.finite(ST13))
+
+rho_st13_main <- cor(df_st13_main$ST13, df_st13_main$viability,
+                     method = "spearman", use = "pairwise.complete.obs")
+
+st13_label <- sprintf(
+  "rho = %.2f\ncor p = %s\nWilcox p = %s\npaired p = %s",
+  rho_st13_main,
+  fmt_p(st13_cor_p),
+  fmt_p(st13_extreme_p),
+  fmt_p(st13_within_p)
+)
+
+p_st13_main <- ggplot(df_st13_main, aes(x = ST13, y = viability)) +
+  geom_point(aes(color = Patient), size = 4, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "grey30",
+              linetype = "dashed", linewidth = 0.7) +
+  scale_color_manual(values = pcols) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.2,
+           label = st13_label, size = 3.8, color = "grey20", lineheight = 1.1) +
+  labs(
+    title = "ST13 (HSP70 Co-Chaperone / HSP70-HSP90 Adaptor) Predicts Onalespib Resistance",
+    subtitle = "Triple-hit [3s] discovery: passes all three statistical strategies",
+    x = "ST13 Protein Abundance (normalized)",
+    y = "Onalespib Viability"
+  ) +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "right")
+print(p_st13_main)
+ggsave("biomarker_figs/final_ST13_onalespib_headline.pdf", p_st13_main, width = 10, height = 7)
+```
+
+## 3.3 ST13 across 6 HSP90 inhibitors with all three strategy p-values
+
+ST13 validates as a resistance marker across 5 structurally distinct HSP90 inhibitors beyond the
+discovery drug Onalespib. Each panel shows the rho plus all three strategy p-values, demonstrating
+that the validation isn't a single-statistic artifact - multiple HSP90 inhibitors show concordant
+multi-strategy support for ST13 as a resistance biomarker.
+
+```{r st13_multi_strategy, fig.width=16, fig.height=10}
+top_hsp90 <- intersect(
+  c("Onalespib", "SNX-2112", "SNX-5422", "Ganetespib", "Retaspimycin", "Tanespimycin"),
+  colnames(drug_mat_all))
+
+# Helper to compute all 3 strategies for one drug × ST13
+compute_st13_stats <- function(drug_id, n_extreme = 5) {
+  viab <- drug_mat_all[shared_val, drug_id]
+  prot <- fm[shared_val, "ST13"]
+  keep <- is.finite(viab) & is.finite(prot)
+  v <- viab[keep]; p <- prot[keep]
+  samp <- shared_val[keep]
+  n <- length(v)
+
+  s1 <- suppressWarnings(cor.test(p, v, method = "spearman", exact = FALSE))
+  rho_val <- unname(s1$estimate); cor_p <- s1$p.value
+
+  wilcox_p <- NA_real_
+  if (n >= 2 * n_extreme) {
+    ord <- order(v)
+    sens <- ord[1:n_extreme]; res <- ord[(n - n_extreme + 1):n]
+    wt <- suppressWarnings(wilcox.test(p[res], p[sens], exact = FALSE))
+    wilcox_p <- wt$p.value
+  }
+
+  paired_p <- NA_real_
+  patient <- sub("_.*$", "", samp)
+  multi_pat <- unique(patient[duplicated(patient)])
+  if (length(multi_pat) >= 3) {
+    deltas <- do.call(rbind, lapply(multi_pat, function(pat) {
+      idx <- which(patient == pat)
+      if (length(idx) < 2) return(NULL)
+      sens_i <- idx[which.min(v[idx])]; res_i <- idx[which.max(v[idx])]
+      if (sens_i == res_i) return(NULL)
+      data.frame(viab_diff = v[res_i] - v[sens_i],
+                 prot_diff = p[res_i] - p[sens_i])
+    }))
+    if (!is.null(deltas) && nrow(deltas) >= 3) {
+      pt <- suppressWarnings(cor.test(deltas$viab_diff, deltas$prot_diff,
+                                      method = "spearman", exact = FALSE))
+      paired_p <- pt$p.value
+    }
+  }
+  list(rho = rho_val, cor_p = cor_p, wilcox_p = wilcox_p, paired_p = paired_p)
+}
+
+plots_st13 <- lapply(top_hsp90, function(d) {
+  df <- data.frame(
+    sample = shared_val, Patient = patient_val,
+    viability = drug_mat_all[shared_val, d],
+    ST13 = fm[shared_val, "ST13"]
+  ) %>% filter(is.finite(viability), is.finite(ST13))
+
+  stats <- compute_st13_stats(d)
+  is_disc <- (d == "Onalespib")
+  label_text <- sprintf(
+    "rho = %.2f\ncor p = %s\nWilcox p = %s\npaired p = %s",
+    stats$rho, fmt_p(stats$cor_p), fmt_p(stats$wilcox_p), fmt_p(stats$paired_p)
+  )
+
+  ggplot(df, aes(x = ST13, y = viability)) +
+    geom_point(aes(color = Patient), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "grey30",
+                linetype = "dashed", linewidth = 0.6) +
+    scale_color_manual(values = pcols) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.2,
+             label = label_text, size = 3.2, color = "grey20", lineheight = 1.1) +
+    labs(title = if (is_disc) paste0(d, " (discovery)") else d,
+         x = "ST13 Abundance", y = "Viability") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "none",
+          plot.title = element_text(face = if (is_disc) "bold" else "plain"))
+})
+
+p_st13 <- wrap_plots(plots_st13, ncol = 3) +
+  plot_annotation(
+    title = "ST13 [3s] (HSP70 Co-Chaperone) Predicts Resistance Across 6 HSP90 Inhibitors",
+    subtitle = "Triple-hit discovery in Onalespib, validated in 5 structurally distinct compounds. Each panel shows all 3 strategy p-values."
+  )
+print(p_st13)
+ggsave("biomarker_figs/final_ST13_multi_hsp90.pdf", p_st13, width = 16, height = 10)
+```
+
+## 3.4 Chaperone network heatmap with discovery source annotation
+
+The full 7-protein chaperone panel × 13 drugs (11 HSP90 inhibitors + Alvocidib + Digoxin). The
+column color annotation shows where each protein was originally discovered: ST13 from Onalespib
+(red), NUDCD3 from Alvocidib (orange), DNAJC8 from Digoxin (blue), and 4 multi-drug recurrent
+proteins (grey). This visualization highlights that the chaperone network was independently
+identified across three structurally unrelated drugs and validates most strongly within the HSP90
+inhibitor class — proteostasis as a master regulator of drug response.
+
+```{r chaperone_heatmap, fig.width=12, fig.height=9}
+chap_genes <- c("HSP90AA1", "HSPA4", "HSPA8", "ST13", "NUDCD3", "CHORDC1", "DNAJC8")
+chap_in <- intersect(chap_genes, colnames(fm))
+
+chap_evidence <- c("HSP90AA1" = " [2s]", "HSPA4" = " [2s]", "HSPA8" = " [2s]",
+                   "ST13" = " [3s]", "NUDCD3" = " [3s]",
+                   "CHORDC1" = " [2s]", "DNAJC8" = " [3s]")
+
+chap_discovery <- c("HSP90AA1" = "Multi-drug", "HSPA4" = "Multi-drug",
+                    "HSPA8" = "Multi-drug", "ST13" = "Onalespib",
+                    "NUDCD3" = "Alvocidib", "CHORDC1" = "Multi-drug",
+                    "DNAJC8" = "Digoxin")
+
+hsp90_drugs <- c("Onalespib", "Tanespimycin", "Alvespimycin", "Ganetespib",
+                 "Luminespib", "Retaspimycin", "SNX-2112", "SNX-5422",
+                 "KW-2478", "CCT-018159", "Geldanamycin")
+extra_drugs <- c("Alvocidib", "Digoxin")
+all_drugs_heatmap <- intersect(c(hsp90_drugs, extra_drugs), colnames(drug_mat_all))
+
+cor_mat <- matrix(NA, nrow = length(all_drugs_heatmap), ncol = length(chap_in),
+                  dimnames = list(all_drugs_heatmap, chap_in))
+for (d in all_drugs_heatmap) {
+  for (p in chap_in) {
+    cor_mat[d, p] <- suppressWarnings(
+      cor(drug_mat_all[shared_val, d], fm[shared_val, p],
+          method = "spearman", use = "pairwise.complete.obs"))
+  }
+}
+
+col_labels <- sapply(colnames(cor_mat), function(p) paste0(p, chap_evidence[p]))
+colnames(cor_mat) <- col_labels
+
+drug_class_anno <- data.frame(
+  Class = ifelse(rownames(cor_mat) %in% hsp90_drugs, "HSP90 inhibitor",
+          ifelse(rownames(cor_mat) == "Alvocidib", "CDK9 inhibitor",
+          ifelse(rownames(cor_mat) == "Digoxin", "Cardiac glycoside", "Other")))
+)
+rownames(drug_class_anno) <- rownames(cor_mat)
+
+discovery_source <- data.frame(
+  Discovery = sapply(chap_in, function(p) chap_discovery[p])
+)
+rownames(discovery_source) <- col_labels
+
+ann_colors_chap <- list(
+  Class = c("HSP90 inhibitor" = "firebrick", "CDK9 inhibitor" = "darkorange",
+            "Cardiac glycoside" = "steelblue"),
+  Discovery = c("Onalespib" = "firebrick", "Alvocidib" = "darkorange",
+                "Digoxin" = "steelblue", "Multi-drug" = "grey50")
+)
+
+pheatmap::pheatmap(
+  cor_mat,
+  color = colorRampPalette(c("steelblue", "white", "firebrick"))(100),
+  breaks = seq(-1, 1, length.out = 101),
+  display_numbers = TRUE, number_format = "%.2f", fontsize_number = 8,
+  annotation_row = drug_class_anno,
+  annotation_col = discovery_source,
+  annotation_colors = ann_colors_chap,
+  cluster_rows = TRUE, cluster_cols = TRUE,
+  legend_breaks = c(-1, -0.5, 0, 0.5, 1),
+  legend_labels = c("-1", "-0.5", "0", "0.5", "1\n\nSpearman\nrho"),
+  main = "Chaperone Network: Discovered Across Drug Classes, Validated for HSP90 Inhibitors\n[3s] = triple-hit    [2s] = 2-strategy recurrent    Column color = discovery drug",
+  fontsize = 11, angle_col = 45,
+  filename = "biomarker_figs/final_hsp90_chaperone_heatmap_annotated.pdf",
+  width = 9, height = 9
+)
+```
+
+## 3.5 Pan-drug chaperone score waterfall
+
+Three-panel waterfall ranking all 238 drugs by their correlation with the chaperone score
+(mean of HSP90AA1 + ST13 + HSPA8). Top: Spearman rho. Middle: mean viability. Bottom: SD of
+viability. HSP90 inhibitors (red) dominate the top of the rho ranking — chaperone capacity is
+the primary HSP90 inhibitor resistance axis. The middle and bottom panels add context by
+identifying anti-chaperone potent drugs (combination candidates) and highlighting variability.
+
+```{r chaperone_waterfall, fig.width=16, fig.height=12}
+chap_score_genes <- c("HSP90AA1", "ST13", "HSPA8")
+chap_score_in <- intersect(chap_score_genes, colnames(fm))
+chap_score <- rowMeans(fm[shared_val, chap_score_in, drop = FALSE], na.rm = TRUE)
+
+chap_drug_df <- data.frame(
+  drug = colnames(drug_mat_all),
+  rho = sapply(colnames(drug_mat_all), function(d) {
+    suppressWarnings(cor(drug_mat_all[shared_val, d], chap_score,
+                         method = "spearman", use = "pairwise.complete.obs"))
+  }),
+  mean_viab = sapply(colnames(drug_mat_all), function(d)
+    mean(drug_mat_all[shared_val, d], na.rm = TRUE)),
+  sd_viab = sapply(colnames(drug_mat_all), function(d)
+    sd(drug_mat_all[shared_val, d], na.rm = TRUE)),
+  stringsAsFactors = FALSE
+) %>% filter(is.finite(rho)) %>%
+  arrange(desc(rho)) %>%
+  mutate(rank = row_number())
+
+chap_drug_df$is_hsp90 <- chap_drug_df$drug %in% hsp90_drugs
+
+chap_drug_df$label_top <- ifelse(chap_drug_df$rank <= 15 | chap_drug_df$is_hsp90,
+                                  chap_drug_df$drug, "")
+
+lowest_neg <- chap_drug_df %>% filter(rho < 0) %>%
+  arrange(mean_viab) %>% slice_head(n = 3) %>% pull(drug)
+lowest_all <- chap_drug_df %>%
+  arrange(mean_viab) %>% slice_head(n = 3) %>% pull(drug)
+label_mid_drugs <- unique(c(lowest_neg, lowest_all))
+chap_drug_df$label_mid <- ifelse(chap_drug_df$drug %in% label_mid_drugs | chap_drug_df$is_hsp90,
+                                  chap_drug_df$drug, "")
+
+top_var <- chap_drug_df %>% arrange(desc(sd_viab)) %>% slice_head(n = 5) %>% pull(drug)
+top_var_neg <- chap_drug_df %>% filter(rho < 0) %>%
+  arrange(desc(sd_viab)) %>% slice_head(n = 3) %>% pull(drug)
+least_var <- chap_drug_df %>% arrange(sd_viab) %>% slice_head(n = 3) %>% pull(drug)
+label_bot_drugs <- unique(c(top_var, top_var_neg, least_var))
+chap_drug_df$label_bot <- ifelse(chap_drug_df$drug %in% label_bot_drugs | chap_drug_df$is_hsp90,
+                                  chap_drug_df$drug, "")
+
+chap_drug_df$drug_f <- factor(chap_drug_df$drug, levels = chap_drug_df$drug)
+
+shared_theme <- theme_bw(base_size = 12) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(),
+        plot.margin = margin(2, 10, 0, 10))
+
+p_top <- ggplot(chap_drug_df, aes(x = drug_f, y = rho, fill = is_hsp90)) +
+  geom_col(width = 1) +
+  geom_hline(yintercept = 0, color = "black", linewidth = 0.3) +
+  geom_text(data = chap_drug_df %>% filter(label_top != ""),
+            aes(label = label_top), angle = 90, hjust = -0.05, size = 2.2,
+            show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "grey75", "TRUE" = "firebrick"),
+                    labels = c("Other drugs", "HSP90 inhibitors")) +
+  labs(title = "Chaperone Score (mean of HSP90AA1, ST13, HSPA8) vs All Drugs",
+       y = "Spearman rho\n(chaperone association)", fill = NULL) +
+  shared_theme +
+  theme(legend.position = "top") +
+  coord_cartesian(ylim = c(-0.5, 1.0), clip = "off")
+
+p_mid <- ggplot(chap_drug_df, aes(x = drug_f, y = mean_viab, fill = is_hsp90)) +
+  geom_col(width = 1) +
+  geom_hline(yintercept = 1.0, linetype = "dashed", color = "grey50", linewidth = 0.3) +
+  geom_text(data = chap_drug_df %>% filter(label_mid != ""),
+            aes(label = label_mid), angle = 90, hjust = -0.05, size = 2.2,
+            show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "grey75", "TRUE" = "firebrick")) +
+  labs(y = "Mean Viability\n(lower = more potent)") +
+  shared_theme +
+  theme(legend.position = "none") +
+  coord_cartesian(ylim = c(0, 1.5), clip = "off")
+
+p_bot <- ggplot(chap_drug_df, aes(x = drug_f, y = sd_viab, fill = is_hsp90)) +
+  geom_col(width = 1) +
+  geom_text(data = chap_drug_df %>% filter(label_bot != ""),
+            aes(label = label_bot), angle = 90, hjust = -0.05, size = 2.2,
+            show.legend = FALSE) +
+  scale_fill_manual(values = c("FALSE" = "grey75", "TRUE" = "firebrick")) +
+  labs(x = "Drugs (ranked by chaperone rho: left = most resistant, right = most sensitive)",
+       y = "SD of Viability\n(response variability)") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        legend.position = "none",
+        plot.margin = margin(0, 10, 5, 10)) +
+  coord_cartesian(ylim = c(0, 0.35), clip = "off")
+
+p_triple <- p_top / p_mid / p_bot + plot_layout(heights = c(1.2, 0.8, 0.6))
+print(p_triple)
+ggsave("biomarker_figs/final_chaperone_triple_waterfall.pdf", p_triple, width = 16, height = 12)
+```
+
+---
+
+# 4. Finding 2: MEK Inhibitor Sensitivity Biomarkers
+
+## 4.1 Rationale
+
+Mirdametinib and Selumetinib share 9 proteins at the 2-strategy level that split cleanly into
+4 resistance markers and 5 sensitivity markers. The sensitivity markers — FECH, AS3MT, STIM1,
+PPP1R1B, ABHD11 — validate class-wide across all 6 MEK inhibitors tested, while the resistance
+markers are more drug-specific. FECH (ferrochelatase, terminal heme biosynthesis) is the cleanest
+finding and connects to a convergent mitochondrial theme.
+
+## 4.2 MEK class-wide biomarker heatmap (resistance vs sensitivity)
+
+Two-panel heatmap showing the 4 resistance markers (left) and 5 sensitivity markers (right) across
+6 MEK inhibitors. The sensitivity panel shows consistent negative rho values across the entire
+class — these biomarkers generalize. The resistance panel is messier with mixed colors, indicating
+those proteins are more Mirdametinib/Selumetinib-specific. The takeaway: **MEK sensitivity
+biomarkers generalize across the class; resistance markers do not**.
+
+```{r mek_split_heatmap, fig.width=14, fig.height=6}
+mek_resist <- c("ABCF1", "TUBA1C", "PPP2R1A", "RETN")
+mek_sensit <- c("FECH", "AS3MT", "STIM1", "PPP1R1B", "ABHD11")
+
+mek_resist_evidence <- rep(" [2s]", length(mek_resist)); names(mek_resist_evidence) <- mek_resist
+mek_sensit_evidence <- rep(" [2s]", length(mek_sensit)); names(mek_sensit_evidence) <- mek_sensit
+
+mek_drugs_6 <- intersect(c("Mirdametinib", "Selumetinib", "Trametinib",
+                            "Binimetinib", "Cobimetinib", "Avutometinib"),
+                         colnames(drug_mat_all))
+
+mek_drug_labels <- c(
+  "Mirdametinib" = "Mirdametinib (MEK1/2)",
+  "Selumetinib"  = "Selumetinib (MEK1/2)",
+  "Trametinib"   = "Trametinib (MEK1/2)",
+  "Binimetinib"  = "Binimetinib (MEK1/2)",
+  "Cobimetinib"  = "Cobimetinib (MEK1)",
+  "Avutometinib" = "Avutometinib (RAF/MEK)"
+)
+
+build_mek_cor <- function(proteins, evidence_map, label) {
+  do.call(rbind, lapply(mek_drugs_6, function(d) {
+    do.call(rbind, lapply(proteins, function(p) {
+      if (!(p %in% colnames(fm))) return(NULL)
+      rho <- suppressWarnings(cor(drug_mat_all[shared_val, d], fm[shared_val, p],
+                                   method = "spearman", use = "pairwise.complete.obs"))
+      p_marked <- paste0(p, evidence_map[p])
+      data.frame(drug = mek_drug_labels[d], protein = p_marked, rho = rho,
+                 group = label, stringsAsFactors = FALSE)
+    }))
+  }))
+}
+
+mek_all_cors <- rbind(
+  build_mek_cor(intersect(mek_resist, colnames(fm)), mek_resist_evidence,
+                "Resistance\n(higher \u2192 less effect)"),
+  build_mek_cor(intersect(mek_sensit, colnames(fm)), mek_sensit_evidence,
+                "Sensitivity\n(higher \u2192 more effect)")
+)
+
+drug_order_mek <- c("Mirdametinib (MEK1/2)", "Selumetinib (MEK1/2)", "Trametinib (MEK1/2)",
+                    "Binimetinib (MEK1/2)", "Cobimetinib (MEK1)", "Avutometinib (RAF/MEK)")
+mek_all_cors$drug <- factor(mek_all_cors$drug, levels = rev(drug_order_mek))
+
+p_mek <- ggplot(mek_all_cors, aes(x = protein, y = drug, fill = rho)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.2f", rho)), size = 3.3) +
+  scale_fill_gradient2(low = "steelblue", mid = "white", high = "firebrick",
+                       midpoint = 0, limits = c(-0.7, 0.7)) +
+  facet_wrap(~ group, scales = "free_x") +
+  labs(title = "MEK Inhibitor Class-Wide Biomarkers \u2014 Resistance vs Sensitivity",
+       subtitle = "MEK sensitivity biomarkers generalize across the class; resistance markers do not",
+       x = NULL, y = NULL, fill = "Spearman\nrho") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(),
+        strip.text = element_text(face = "bold", size = 11))
+print(p_mek)
+ggsave("biomarker_figs/final_mek_resist_sensit.pdf", p_mek, width = 14, height = 6)
+```
+
+## 4.3 FECH sensitivity scatter across all 6 MEK inhibitors
+
+Per-drug scatter showing FECH abundance vs viability for each MEK inhibitor. Negative slope
+(sensitivity) is consistent across all 6 drugs, confirming the heatmap finding. FECH is the
+terminal enzyme of heme biosynthesis; higher FECH → more heme → more functional cytochromes →
+more active mitochondrial electron transport → more sensitive to MEK blockade. This connects
+directly to the Selumetinib mitochondrial signature in section 4.4.
+
+```{r fech_scatter, fig.width=14, fig.height=8}
+mek_class_labels <- c(
+  "Mirdametinib" = "Mirdametinib\n(MEK1/2)",
+  "Selumetinib"  = "Selumetinib\n(MEK1/2)",
+  "Trametinib"   = "Trametinib\n(MEK1/2)",
+  "Binimetinib"  = "Binimetinib\n(MEK1/2)",
+  "Cobimetinib"  = "Cobimetinib\n(MEK1)",
+  "Avutometinib" = "Avutometinib\n(RAF/MEK)"
+)
+
+df_fech <- do.call(rbind, lapply(mek_drugs_6, function(d) {
+  data.frame(sample = shared_val, Patient = patient_val,
+             drug = mek_class_labels[d],
+             viability = drug_mat_all[shared_val, d],
+             FECH = fm[shared_val, "FECH"], stringsAsFactors = FALSE)
+})) %>% filter(is.finite(viability), is.finite(FECH))
+
+ann_fech <- df_fech %>%
+  group_by(drug) %>%
+  summarise(rho = suppressWarnings(cor(FECH, viability, method = "spearman")),
+            .groups = "drop") %>%
+  mutate(label = sprintf("rho = %.2f", rho))
+
+p_fech <- ggplot(df_fech, aes(x = FECH, y = viability)) +
+  geom_point(aes(color = Patient), size = 2.5, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "grey30",
+              linetype = "dashed", linewidth = 0.6) +
+  geom_text(data = ann_fech, aes(label = label), x = -Inf, y = Inf,
+            hjust = -0.05, vjust = 1.5, size = 3.5, color = "grey20", inherit.aes = FALSE) +
+  facet_wrap(~ drug, ncol = 3) +
+  scale_color_manual(values = pcols) +
+  labs(title = "Ferrochelatase (FECH) Predicts MEK Inhibitor Sensitivity Across the Class",
+       subtitle = "Higher FECH \u2192 more heme \u2192 more active mitochondrial ETC \u2192 more sensitive",
+       x = "FECH Abundance (normalized)", y = "Viability") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right")
+print(p_fech)
+ggsave("biomarker_figs/final_FECH_sensitivity.pdf", p_fech, width = 14, height = 8)
+```
+
+## 4.4 Selumetinib mitochondrial translation signature
+
+UQCRC1 (Complex III subunit), PARS2 (mitochondrial prolyl-tRNA synthetase), and MRPL2
+(mitochondrial ribosomal protein L2) are all triple-hits for Selumetinib. Their averaged score
+correlates strongly (rho = -0.59) with Selumetinib viability, converging with the FECH finding:
+mitochondrially active tumors are more sensitive to MEK blockade. This is a coherent biological
+signal across two independent biomarker discoveries (FECH from MEK class, mito translation from
+Selumetinib triple-hits).
+
+```{r selumetinib_mito, fig.width=9, fig.height=6}
+mito_in <- intersect(c("UQCRC1", "PARS2", "MRPL2"), colnames(fm))
+mito_score <- rowMeans(fm[shared_val, mito_in, drop = FALSE], na.rm = TRUE)
+
+df_mito <- data.frame(
+  sample = shared_val, Patient = patient_val,
+  viability = drug_mat_all[shared_val, "Selumetinib"],
+  mito_score = mito_score
+) %>% filter(is.finite(viability), is.finite(mito_score))
+
+rho_mito <- suppressWarnings(cor(df_mito$mito_score, df_mito$viability, method = "spearman"))
+
+p_mito <- ggplot(df_mito, aes(x = mito_score, y = viability)) +
+  geom_point(aes(color = Patient), size = 3.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "grey30",
+              linetype = "dashed", linewidth = 0.7) +
+  scale_color_manual(values = pcols) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+           label = sprintf("rho = %.2f (sensitivity)\nHigher mitochondrial translation \u2192 more sensitive",
+                           rho_mito),
+           size = 3.8, color = "grey20") +
+  labs(title = "Mitochondrial Translation Signature Predicts Selumetinib Sensitivity",
+       subtitle = paste0("Score = mean of: ",
+                         paste(paste0(mito_in, " [3s]"), collapse = " + ")),
+       x = "Mitochondrial Translation Score", y = "Selumetinib Viability") +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "right")
+print(p_mito)
+ggsave("biomarker_figs/final_selumetinib_mito.pdf", p_mito, width = 9, height = 6)
+```
+
+---
+
+# 5. Finding 3: Transcriptional CDK Biomarkers (Alvocidib)
+
+## 5.1 Rationale
+
+Alvocidib yielded 4 triple-hit biomarkers: NUDCD3, MRAS, PSMB5, EIF4E. We validated these against
+all transcriptional CDK inhibitors (CDK9: Dinaciclib, Enitociclib, Fadraciclib; CDK7: THZ1) and
+cell cycle CDK inhibitors (CDK4/6: Palbociclib, Ribociclib, Abemaciclib, Trilaciclib). The key
+finding: THZ1 (CDK7) aligns with the CDK9 drugs, not CDK4/6 — confirming these biomarkers reflect
+RNA Pol II-dependent transcription rather than the CDK family broadly.
+
+## 5.2 CDK dot plot: transcriptional vs cell cycle specificity
+
+Each panel shows one biomarker; each dot is one drug colored by CDK class. Crossbar would
+indicate class mean (omitted for clarity). The pattern is clean: blue dots (CDK9 + CDK7) cluster
+high, red dots (CDK4/6) cluster near zero or negative. Alvocidib is highlighted with a black ring
+as the discovery drug. MRAS shows the cleanest specificity with all transcriptional CDK drugs at
+rho ≥ 0.4 and CDK4/6 drugs near zero.
+
+```{r cdk_dotplot, fig.width=16, fig.height=6}
+cdk_targets <- c("NUDCD3", "MRAS", "PSMB5", "EIF4E")
+cdk_in <- intersect(cdk_targets, colnames(fm))
+
+cdk_classes <- list(
+  "CDK9\n(Transcriptional)" = c("Alvocidib", "Dinaciclib", "Enitociclib", "Fadraciclib"),
+  "CDK7\n(Transcriptional)" = c("THZ1"),
+  "CDK4/6\n(Cell Cycle)" = c("Palbociclib", "Ribociclib", "Abemaciclib", "Trilaciclib")
+)
+
+cdk_cor <- do.call(rbind, lapply(names(cdk_classes), function(cls) {
+  drugs <- intersect(cdk_classes[[cls]], colnames(drug_mat_all))
+  if (length(drugs) == 0) return(NULL)
+  do.call(rbind, lapply(drugs, function(d) {
+    do.call(rbind, lapply(cdk_in, function(p) {
+      rho <- suppressWarnings(cor(drug_mat_all[shared_val, d], fm[shared_val, p],
+                                   method = "spearman", use = "pairwise.complete.obs"))
+      data.frame(drug = d, protein = paste0(p, " [3s]"), rho = rho,
+                 class = cls, stringsAsFactors = FALSE)
+    }))
+  }))
+}))
+
+cdk_cor$class <- factor(cdk_cor$class, levels = c(
+  "CDK9\n(Transcriptional)", "CDK7\n(Transcriptional)", "CDK4/6\n(Cell Cycle)"
+))
+cdk_cor$protein <- factor(cdk_cor$protein,
+                          levels = paste0(c("NUDCD3", "MRAS", "PSMB5", "EIF4E"), " [3s]"))
+
+class_colors_cdk <- c("CDK9\n(Transcriptional)" = "steelblue",
+                      "CDK7\n(Transcriptional)" = "lightskyblue",
+                      "CDK4/6\n(Cell Cycle)" = "firebrick")
+
+p_dot <- ggplot(cdk_cor, aes(x = class, y = rho, color = class)) +
+  geom_hline(yintercept = 0, color = "grey50", linewidth = 0.3) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  geom_point(data = subset(cdk_cor, drug == "Alvocidib"),
+             shape = 21, fill = NA, color = "black", stroke = 1, size = 4) +
+  geom_text_repel(
+    aes(label = drug,
+        fontface = ifelse(drug == "Alvocidib", "bold", "plain")),
+    size = 3, max.overlaps = 20, segment.color = "grey60", segment.size = 0.3,
+    show.legend = FALSE
+  ) +
+  facet_wrap(~ protein, ncol = 4) +
+  scale_color_manual(values = class_colors_cdk) +
+  labs(title = "Alvocidib Biomarkers [3s], Transcriptional CDK (blue) vs Cell Cycle CDK (red)",
+       x = NULL, y = "Spearman rho with viability") +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold", size = 12),
+        axis.text.x = element_text(size = 9))
+
+print(p_dot)
+ggsave("biomarker_figs/final_cdk_dotplot.pdf", p_dot, width = 16, height = 6)
+```
+
+## 5.3 NUDCD3 across the 5 transcriptional CDK inhibitors
+
+Per-drug scatter for NUDCD3 across all 5 transcriptional CDK inhibitors (CDK9 + THZ1). Each panel
+shows the rho value; Alvocidib (the discovery drug) is shown first with bold formatting. NUDCD3
+abundance correlates positively with viability across all 5 drugs, with rho ranging from 0.41 to
+0.73. NUDCD3 is a HSP70/HSP90 co-chaperone — this finding bridges the transcriptional CDK story
+to the chaperone proteostasis theme.
+
+```{r nudcd3_transcriptional, fig.width=14, fig.height=5}
+cdk_transcriptional <- intersect(
+  c("Alvocidib", "Dinaciclib", "Enitociclib", "Fadraciclib", "THZ1"),
+  colnames(drug_mat_all))
+
+plots_nudcd3 <- lapply(cdk_transcriptional, function(d) {
+  df <- data.frame(
+    sample = shared_val, Patient = patient_val,
+    viability = drug_mat_all[shared_val, d],
+    NUDCD3 = fm[shared_val, "NUDCD3"]
+  ) %>% filter(is.finite(viability), is.finite(NUDCD3))
+
+  rho <- suppressWarnings(cor(df$NUDCD3, df$viability, method = "spearman"))
+  is_disc <- (d == "Alvocidib")
+  target_label <- if (d == "THZ1") "(CDK7)" else "(CDK9)"
+
+  ggplot(df, aes(x = NUDCD3, y = viability)) +
+    geom_point(aes(color = Patient), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "grey30",
+                linetype = "dashed", linewidth = 0.6) +
+    scale_color_manual(values = pcols) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+             label = sprintf("rho = %.2f", rho), size = 4, color = "grey20") +
+    labs(title = if (is_disc) paste0(d, " (CDK9 - discovery)") else paste0(d, " ", target_label),
+         x = "NUDCD3 Abundance", y = "Viability") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "none",
+          plot.title = element_text(face = if (is_disc) "bold" else "plain"))
+})
+
+p_nudcd3 <- wrap_plots(plots_nudcd3, ncol = 3) +
+  plot_annotation(
+    title = "NUDCD3 [3s] Predicts Transcriptional CDK Inhibitor Resistance",
+    subtitle = "Triple-hit discovery from Alvocidib. Validated across 4 CDK9 + 1 CDK7 inhibitor."
+  )
+print(p_nudcd3)
+ggsave("biomarker_figs/final_NUDCD3_transcriptional_cdk.pdf", p_nudcd3, width = 14, height = 5)
+```
+
+---
+
+# 6. Finding 4: Fimepinostat Dual-Mechanism Amplification
+
+## 6.1 Rationale
+
+Fimepinostat is a dual PI3K/HDAC inhibitor. Its 6 triple-hit biomarkers (RASA4, ETS1, BCL7B,
+GALC, ITGA5, LIFR) show correlations 2–4x stronger than any single drug class. We decomposed
+the PI3K class into PI3K-selective, PI3K/mTOR dual, HDAC-only, and mTOR-only to identify which
+drug arm contributes each biomarker.
+
+## 6.2 Fimepinostat biomarker deconvolution across drug classes
+
+Bar chart per biomarker showing mean rho when computed across each drug class. Fimepinostat's
+single-drug rho (red) consistently exceeds the mean rho of any single-class group, confirming that
+the dual mechanism amplifies biomarker signal. BCL7B is the only protein where HDAC mean rho
+approaches the Fimepinostat value, identifying it as the most HDAC-enriched biomarker.
+
+```{r fime_deconv, fig.width=16, fig.height=8}
+pi3k_selective <- intersect(c("Copanlisib", "Alpelisib", "Eganelisib", "Umbralisib", "Duvelisib"),
+                            colnames(drug_mat_all))
+pi3k_mtor_dual <- intersect(c("Omipalisib", "Apitolisib", "Bimiralisib", "NVP-BEZ235", "LY3023414"),
+                            colnames(drug_mat_all))
+hdac_only <- intersect(c("Vorinostat", "Panobinostat", "Belinostat", "Romidepsin", "Entinostat"),
+                       colnames(drug_mat_all))
+mtor_only_drugs <- intersect(c("Rapamycin", "Everolimus", "Temsirolimus",
+                                "Sapanisertib", "Vistusertib"), colnames(drug_mat_all))
+
+fime_proteins <- c("RASA4", "ETS1", "BCL7B", "GALC", "ITGA5", "LIFR")
+fime_in <- intersect(fime_proteins, colnames(fm))
+fime_evidence <- rep(" [3s]", length(fime_proteins)); names(fime_evidence) <- fime_proteins
+
+pi3k_sel_label  <- sprintf("PI3K-selective\n(n=%d)", length(pi3k_selective))
+pi3k_dual_label <- sprintf("PI3K/mTOR dual\n(n=%d)", length(pi3k_mtor_dual))
+hdac_label      <- sprintf("HDAC only\n(n=%d)", length(hdac_only))
+mtor_label      <- sprintf("mTOR only\n(n=%d)", length(mtor_only_drugs))
+fime_label      <- "Fimepinostat\n(PI3K+HDAC, n=1)"
+
+class_data <- do.call(rbind, lapply(fime_in, function(p) {
+  get_mean <- function(drug_set, cls) {
+    if (length(drug_set) == 0) return(NULL)
+    rhos <- sapply(drug_set, function(d) {
+      suppressWarnings(cor(drug_mat_all[shared_val, d], fm[shared_val, p],
+                           method = "spearman", use = "pairwise.complete.obs"))
+    })
+    data.frame(protein = paste0(p, fime_evidence[p]), class = cls,
+               mean_rho = mean(rhos, na.rm = TRUE), stringsAsFactors = FALSE)
+  }
+  rbind(
+    data.frame(protein = paste0(p, fime_evidence[p]), class = fime_label,
+               mean_rho = suppressWarnings(cor(drug_mat_all[shared_val, "Fimepinostat"],
+                                                fm[shared_val, p], method = "spearman")),
+               stringsAsFactors = FALSE),
+    get_mean(pi3k_selective, pi3k_sel_label),
+    get_mean(pi3k_mtor_dual, pi3k_dual_label),
+    get_mean(hdac_only, hdac_label),
+    get_mean(mtor_only_drugs, mtor_label)
+  )
+}))
+
+deconv_palette <- setNames(
+  c("firebrick", "steelblue", "slateblue", "darkorange", "grey50"),
+  c(fime_label, pi3k_sel_label, pi3k_dual_label, hdac_label, mtor_label)
+)
+class_data$class <- factor(class_data$class, levels = names(deconv_palette))
+
+p_deconv <- ggplot(class_data, aes(x = class, y = mean_rho, fill = class)) +
+  geom_col(width = 0.7) +
+  geom_hline(yintercept = 0, color = "grey50") +
+  geom_text(aes(label = sprintf("%.2f", mean_rho)),
+            vjust = ifelse(class_data$mean_rho >= 0, -0.3, 1.3), size = 3) +
+  facet_wrap(~ protein, ncol = 3, scales = "free_y") +
+  scale_fill_manual(values = deconv_palette) +
+  labs(title = "Fimepinostat Biomarker Deconvolution",
+       subtitle = "Dual PI3K+HDAC mechanism amplifies biomarker signal 2-4x beyond single-class drugs",
+       x = NULL, y = "Mean Spearman rho with viability") +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+        strip.text = element_text(face = "bold"))
+print(p_deconv)
+ggsave("biomarker_figs/final_fimepinostat_deconvolution.pdf", p_deconv, width = 16, height = 8)
+```
+
+## 6.3 RASA4 and ETS1: mirror-image biomarkers for Fimepinostat
+
+RASA4 (RAS GTPase activating protein 4) and ETS1 (ETS proto-oncogene transcription factor) form
+a complementary sensitivity/resistance pair with mirrored slopes. RASA4 (rho = -0.68, sensitivity)
+inactivates RAS — high RASA4 means tumors are PI3K/mTOR-dependent and collapse when blocked.
+ETS1 (rho = +0.72, resistance) is a downstream MAPK transcription factor — high ETS1 means active
+MAPK signaling that bypasses PI3K blockade. Together they map the MAPK bypass axis: tumors with
+low RASA4 + high ETS1 have constitutive MAPK signaling and resist Fimepinostat.
+
+```{r rasa4_ets1_mirror, fig.width=14, fig.height=5.5}
+df_fime <- data.frame(
+  sample = shared_val, Patient = patient_val,
+  viability = drug_mat_all[shared_val, "Fimepinostat"],
+  RASA4 = fm[shared_val, "RASA4"],
+  ETS1  = fm[shared_val, "ETS1"]
+) %>% filter(is.finite(viability))
+
+rho_rasa4 <- suppressWarnings(cor(df_fime$RASA4, df_fime$viability,
+                                   method = "spearman", use = "pairwise.complete.obs"))
+rho_ets1  <- suppressWarnings(cor(df_fime$ETS1,  df_fime$viability,
+                                   method = "spearman", use = "pairwise.complete.obs"))
+
+p_rasa4_panel <- ggplot(df_fime, aes(x = RASA4, y = viability)) +
+  geom_point(aes(color = Patient), size = 3.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "grey30",
+              linetype = "dashed", linewidth = 0.7) +
+  scale_color_manual(values = pcols) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+           label = sprintf("rho = %.2f (sensitivity)\nHigh RASA4 \u2192 low RAS \u2192 PI3K-dependent",
+                           rho_rasa4),
+           size = 3.5, color = "grey20") +
+  labs(title = "RASA4 [3s] \u2014 Fimepinostat Sensitivity",
+       x = "RASA4 Abundance", y = "Viability") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none")
+
+p_ets1_panel <- ggplot(df_fime, aes(x = ETS1, y = viability)) +
+  geom_point(aes(color = Patient), size = 3.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "grey30",
+              linetype = "dashed", linewidth = 0.7) +
+  scale_color_manual(values = pcols) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+           label = sprintf("rho = %.2f (resistance)\nHigh ETS1 \u2192 active MAPK \u2192 bypasses PI3K block",
+                           rho_ets1),
+           size = 3.5, color = "grey20") +
+  labs(title = "ETS1 [3s] \u2014 Fimepinostat Resistance",
+       x = "ETS1 Abundance", y = "Viability") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right")
+
+p_fime_dual <- p_rasa4_panel + p_ets1_panel + plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "RASA4 and ETS1: Mirror-Image Biomarkers Mapping the MAPK Bypass Axis",
+    subtitle = "Both proteins are triple-hit discoveries from Fimepinostat. Opposite slopes reflect opposite biology."
+  )
+print(p_fime_dual)
+ggsave("biomarker_figs/final_fimepinostat_RASA4_ETS1_mirror.pdf", p_fime_dual,
+       width = 14, height = 5.5)
+```
+
+## 6.4 RASA4 sensitivity across PI3K/mTOR axis
+
+Per-drug scatter showing RASA4 generalizes as a sensitivity marker beyond Fimepinostat across
+PI3K-selective, PI3K/mTOR dual, and mTOR drugs. Each panel labels the drug class. RASA4's RAS-GAP
+function makes biological sense as a pathway-wide marker — tumors with high RASA4 have suppressed
+RAS and depend more on PI3K/mTOR signaling for survival.
+
+```{r rasa4_scatter, fig.width=16, fig.height=8}
+rasa4_all_drugs <- intersect(
+  c("Fimepinostat", "Omipalisib", "Apitolisib", "Sapanisertib",
+    "Copanlisib", "Alpelisib", "Everolimus"),
+  colnames(drug_mat_all))
+
+rasa4_class_map <- c(
+  "Fimepinostat" = "PI3K+HDAC", "Copanlisib" = "PI3K-selective",
+  "Alpelisib" = "PI3K\u03b1-selective", "Omipalisib" = "PI3K/mTOR dual",
+  "Apitolisib" = "PI3K/mTOR dual", "Sapanisertib" = "mTORC1/2 catalytic",
+  "Everolimus" = "mTORC1 allosteric"
+)
+
+plots_rasa4 <- lapply(rasa4_all_drugs, function(d) {
+  df <- data.frame(
+    sample = shared_val, Patient = patient_val,
+    viability = drug_mat_all[shared_val, d],
+    RASA4 = fm[shared_val, "RASA4"]
+  ) %>% filter(is.finite(viability), is.finite(RASA4))
+
+  rho <- suppressWarnings(cor(df$RASA4, df$viability, method = "spearman"))
+  cls <- rasa4_class_map[d]
+  is_disc <- (d == "Fimepinostat")
+
+  ggplot(df, aes(x = RASA4, y = viability)) +
+    geom_point(aes(color = Patient), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "grey30",
+                linetype = "dashed", linewidth = 0.6) +
+    scale_color_manual(values = pcols) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+             label = sprintf("rho = %.2f\n%s", rho, cls), size = 3.3, color = "grey20") +
+    labs(title = if (is_disc) paste0(d, " (discovery)") else d,
+         x = "RASA4 Abundance", y = "Viability") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "none",
+          plot.title = element_text(face = if (is_disc) "bold" else "plain"))
+})
+
+p_rasa4 <- wrap_plots(plots_rasa4, ncol = 4) +
+  plot_annotation(
+    title = "RASA4 [3s] Sensitivity Across the PI3K/mTOR Pathway Axis"
+  )
+print(p_rasa4)
+ggsave("biomarker_figs/final_RASA4_classified.pdf", p_rasa4, width = 16, height = 8)
+```
+
+## 6.5 BCL7B across HDAC inhibitors
+
+BCL7B (component of the SWI/SNF chromatin remodeling complex) is the most HDAC-enriched biomarker
+from the Fimepinostat panel. Per-drug scatter across 6 HDAC inhibitors shows positive rho across
+4/5 pure HDAC drugs, validating BCL7B as an HDAC class biomarker rather than a Fimepinostat-only
+finding. The chromatin-modifier biology fits — BCL7B-high tumors depend on intact SWI/SNF
+function, which is disrupted by HDAC blockade.
+
+```{r bcl7b_hdac, fig.width=14, fig.height=8}
+hdac_class_labels <- c(
+  "Fimepinostat" = "Fimepinostat\n(PI3K+HDAC)",
+  "Panobinostat" = "Panobinostat\n(pan-HDAC)",
+  "Romidepsin"   = "Romidepsin\n(HDAC1/2)",
+  "Vorinostat"   = "Vorinostat\n(pan-HDAC)",
+  "Belinostat"   = "Belinostat\n(pan-HDAC)",
+  "Entinostat"   = "Entinostat\n(HDAC1/3)"
+)
+
+hdac_for_bcl7b <- intersect(names(hdac_class_labels), colnames(drug_mat_all))
+
+plots_bcl7b <- lapply(hdac_for_bcl7b, function(d) {
+  df <- data.frame(
+    sample = shared_val, Patient = patient_val,
+    viability = drug_mat_all[shared_val, d],
+    BCL7B = fm[shared_val, "BCL7B"]
+  ) %>% filter(is.finite(viability), is.finite(BCL7B))
+
+  rho <- suppressWarnings(cor(df$BCL7B, df$viability, method = "spearman"))
+
+  ggplot(df, aes(x = BCL7B, y = viability)) +
+    geom_point(aes(color = Patient), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "grey30",
+                linetype = "dashed", linewidth = 0.6) +
+    scale_color_manual(values = pcols) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+             label = sprintf("rho = %.2f", rho), size = 4, color = "grey20") +
+    labs(title = hdac_class_labels[d], x = "BCL7B Abundance", y = "Viability") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "none")
+})
+
+p_bcl7b <- wrap_plots(plots_bcl7b, ncol = 3) +
+  plot_annotation(
+    title = "BCL7B [3s] (SWI/SNF Component) Predicts HDAC Inhibitor Resistance",
+    subtitle = "Strongest HDAC-enriched biomarker from Fimepinostat deconvolution"
+  )
+print(p_bcl7b)
+ggsave("biomarker_figs/final_BCL7B_hdac.pdf", p_bcl7b, width = 14, height = 8)
+```
+
+---
+
+# 7. Finding 5: Copanlisib (PI3K/AKT Bypass)
+
+## 7.1 Rationale
+
+Copanlisib has the lowest variability of all 7 drugs (SD = 0.044), yet yielded 5 triple-hit
+biomarkers. NECTIN4 (rho = +0.71) is the strongest: a cell adhesion molecule that directly
+activates PI3K/AKT/Rac1 signaling and is the FDA-approved Enfortumab vedotin ADC target.
+NECTIN4-high tumors may have constitutive PI3K activation that bypasses pharmacological inhibition.
+PCTP validates more broadly across PI3K/mTOR drugs, while C1orf174 provides a sensitivity axis.
+
+## 7.2 NECTIN4 context scatter
+
+Annotated scatter showing the resistance mechanism explicitly. Each sample is labeled, and the
+two corner annotations explain the biology: high NECTIN4 → constitutive PI3K/AKT → Copanlisib
+bypass; low NECTIN4 → PI3K-dependent → sensitive. NECTIN4 is also the FDA-approved Enfortumab
+vedotin target, raising the possibility that NECTIN4-high PI3K-resistant tumors might be ADC
+candidates instead.
+
+```{r nectin4_context, fig.width=11, fig.height=8}
+df_n4 <- data.frame(
+  sample = shared_val, Patient = patient_val,
+  viability = drug_mat_all[shared_val, "Copanlisib"],
+  NECTIN4 = fm[shared_val, "NECTIN4"]
+) %>% filter(is.finite(viability), is.finite(NECTIN4))
+
+rho_n4 <- suppressWarnings(cor(df_n4$NECTIN4, df_n4$viability, method = "spearman"))
+
+p_n4_context <- ggplot(df_n4, aes(x = NECTIN4, y = viability)) +
+  geom_point(aes(color = Patient), size = 4.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "grey30",
+              linetype = "dashed", linewidth = 0.7) +
+  scale_color_manual(values = pcols) +
+  geom_text_repel(aes(label = sample, color = Patient), size = 2.5,
+                  max.overlaps = 20, segment.size = 0.3, show.legend = FALSE) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+           label = sprintf("rho = %.2f", rho_n4), size = 5, color = "grey20") +
+  annotate("label", x = max(df_n4$NECTIN4, na.rm = TRUE),
+           y = min(df_n4$viability, na.rm = TRUE) + 0.02,
+           label = "High NECTIN4\n= constitutive PI3K/AKT\n= Copanlisib bypass",
+           hjust = 1, size = 3.5, fill = "firebrick", color = "white",
+           fontface = "bold", label.size = 0) +
+  annotate("label", x = min(df_n4$NECTIN4, na.rm = TRUE),
+           y = max(df_n4$viability, na.rm = TRUE) - 0.02,
+           label = "Low NECTIN4\n= PI3K-dependent\n= sensitive to Copanlisib",
+           hjust = 0, size = 3.5, fill = "steelblue", color = "white",
+           fontface = "bold", label.size = 0) +
+  labs(title = "NECTIN4 [3s] \u2014 Copanlisib Resistance via PI3K/AKT Bypass",
+       subtitle = "NECTIN4 directly activates PI3K/AKT/Rac1. High expression may sustain pathway activation despite PI3K blockade.",
+       x = "NECTIN4 Abundance (normalized)", y = "Copanlisib Viability") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "right")
+print(p_n4_context)
+ggsave("biomarker_figs/final_NECTIN4_copanlisib_context.pdf", p_n4_context, width = 11, height = 8)
+```
+
+## 7.3 Copanlisib validation heatmap across PI3K/mTOR classes
+
+Heatmap of all 5 Copanlisib triple-hits across 16 PI3K/mTOR drugs, manually grouped by class
+(PI3K-selective → PI3K/mTOR dual → PI3K+HDAC → mTOR-only). Copanlisib and Fimepinostat are marked
+with asterisks as drugs of interest. Key observations: NECTIN4 is strongest for Copanlisib itself
+and Temsirolimus but weaker for other PI3K drugs; PCTP validates more broadly; Fimepinostat shows
+near-zero for all 5 proteins despite shared PI3K target.
+
+```{r copa_heatmap, fig.width=12, fig.height=10}
+copa_hits <- c("NECTIN4", "PCTP", "C1orf174", "USP38", "REPIN1")
+copa_in <- intersect(copa_hits, colnames(fm))
+
+fime_in_copa <- intersect("Fimepinostat", colnames(drug_mat_all))
+drug_order_copa <- c(pi3k_selective, pi3k_mtor_dual, fime_in_copa, mtor_only_drugs)
+
+copa_mat <- matrix(NA, nrow = length(drug_order_copa), ncol = length(copa_in),
+                   dimnames = list(drug_order_copa, copa_in))
+for (d in drug_order_copa) {
+  for (p in copa_in) {
+    copa_mat[d, p] <- suppressWarnings(
+      cor(drug_mat_all[shared_val, d], fm[shared_val, p],
+          method = "spearman", use = "pairwise.complete.obs"))
+  }
+}
+
+row_labels <- rownames(copa_mat)
+drug_class_copa <- data.frame(
+  Class = case_when(
+    row_labels %in% pi3k_selective ~ "PI3K-selective",
+    row_labels %in% pi3k_mtor_dual ~ "PI3K/mTOR dual",
+    row_labels == "Fimepinostat" ~ "PI3K+HDAC",
+    row_labels %in% mtor_only_drugs ~ "mTOR only"
+  )
+)
+rownames(drug_class_copa) <- row_labels
+
+ann_colors_copa <- list(
+  Class = c("PI3K-selective" = "steelblue", "PI3K/mTOR dual" = "slateblue",
+            "PI3K+HDAC" = "firebrick", "mTOR only" = "grey50")
+)
+
+# Mark drugs of interest with asterisk
+bold_rows <- row_labels
+bold_rows[bold_rows == "Copanlisib"]   <- "Copanlisib*"
+bold_rows[bold_rows == "Fimepinostat"] <- "Fimepinostat*"
+rownames(copa_mat) <- bold_rows
+rownames(drug_class_copa) <- bold_rows
+
+pheatmap::pheatmap(
+  copa_mat,
+  color = colorRampPalette(c("steelblue", "white", "firebrick"))(100),
+  breaks = seq(-1, 1, length.out = 101),
+  display_numbers = TRUE, number_format = "%.2f", fontsize_number = 9,
+  annotation_row = drug_class_copa, annotation_colors = ann_colors_copa,
+  cluster_rows = FALSE, cluster_cols = TRUE,
+  gaps_row = c(length(pi3k_selective),
+               length(pi3k_selective) + length(pi3k_mtor_dual),
+               length(pi3k_selective) + length(pi3k_mtor_dual) + length(fime_in_copa)),
+  legend_breaks = c(-1, -0.5, 0, 0.5, 1),
+  legend_labels = c("-1", "-0.5", "0", "0.5", "1\n\nSpearman\nrho"),
+  main = "Copanlisib [3s] Biomarkers Across PI3K/mTOR Drugs\n* = drug of interest",
+  fontsize = 11, fontsize_row = 10, fontsize_col = 10,
+  angle_col = 45, cellwidth = 50, cellheight = 30,
+  filename = "biomarker_figs/final_copanlisib_validation.pdf",
+  width = 12, height = 10
+)
+```
+
+## 7.4 C1orf174 sensitivity across PI3K/mTOR axis
+
+C1orf174 (MEAK7, recently linked to mTORC1 signaling) consistently predicts sensitivity (negative
+rho) across PI3K-selective, PI3K/mTOR dual, and mTOR drugs. Two informative exceptions: Duvelisib
+(PI3Kδ/γ-selective) breaks the pattern because it bypasses the mTOR axis, and Fimepinostat is flat
+because the HDAC mechanism dominates response biology. The pattern supports C1orf174 as a marker
+of PI3Kα→AKT→mTOR-dependent tumors.
+
+```{r c1orf174, fig.width=16, fig.height=8}
+c1_drugs <- intersect(c("Copanlisib", "Duvelisib", "Alpelisib", "Apitolisib",
+                         "Temsirolimus", "Everolimus", "Omipalisib", "Fimepinostat"),
+                      colnames(drug_mat_all))
+
+c1_class_map <- c(
+  "Copanlisib" = "PI3K-selective", "Duvelisib" = "PI3K\u03b4/\u03b3-selective",
+  "Alpelisib" = "PI3K\u03b1-selective",
+  "Apitolisib" = "PI3K/mTOR dual", "Omipalisib" = "PI3K/mTOR dual",
+  "Temsirolimus" = "mTOR-selective", "Everolimus" = "mTOR-selective",
+  "Fimepinostat" = "PI3K/HDAC dual"
+)
+
+plots_c1 <- lapply(c1_drugs, function(d) {
+  df <- data.frame(
+    sample = shared_val, Patient = patient_val,
+    viability = drug_mat_all[shared_val, d],
+    C1orf174 = fm[shared_val, "C1orf174"]
+  ) %>% filter(is.finite(viability), is.finite(C1orf174))
+
+  rho <- suppressWarnings(cor(df$C1orf174, df$viability, method = "spearman"))
+  cls <- c1_class_map[d]
+  is_disc <- (d == "Copanlisib")
+
+  ggplot(df, aes(x = C1orf174, y = viability)) +
+    geom_point(aes(color = Patient), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "grey30",
+                linetype = "dashed", linewidth = 0.6) +
+    scale_color_manual(values = pcols) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+             label = sprintf("rho = %.2f\n%s", rho, cls), size = 3.3, color = "grey20") +
+    labs(title = if (is_disc) paste0(d, " (discovery)") else d,
+         x = "C1orf174 Abundance", y = "Viability") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "none",
+          plot.title = element_text(face = if (is_disc) "bold" else "plain"))
+})
+
+p_c1 <- wrap_plots(plots_c1, ncol = 4) +
+  plot_annotation(
+    title = "C1orf174 [3s] \u2014 Sensitivity Marker Across the PI3K/mTOR Axis",
+    subtitle = "Consistently negative except Duvelisib (PI3K\u03b4/\u03b3, bypasses mTOR) and Fimepinostat (HDAC-dominant)"
+  )
+print(p_c1)
+ggsave("biomarker_figs/final_C1orf174_sensitivity.pdf", p_c1, width = 16, height = 8)
+```
+
+---
+
+# 8. Finding 6: Digoxin (Multi-Factorial Resistance)
+
+## 8.1 Rationale
+
+Digoxin is the mechanistic outlier — a cardiac glycoside targeting Na+/K+-ATPase with no close
+replicates in the screen. 6 triple-hit biomarkers were found, each representing a distinct
+cellular defense mechanism: drug uptake (OSCP1), electron transfer (CYB561D2), translation
+(EEF2), RNA surveillance (ZCCHC8), DNA repair (ABRAXAS1), and chaperone biology (DNAJC8).
+DNAJC8 links to the broader HSP chaperone resistance axis.
+
+## 8.2 OSCP1 predicts Digoxin sensitivity
+
+Standalone scatter highlighting the strongest Digoxin biomarker. OSCP1 (Organic Solute Carrier
+Partner 1) is a transmembrane transporter; the negative correlation (rho = -0.66) suggests a
+pharmacokinetic mechanism — higher OSCP1 → more drug uptake → higher intracellular concentration
+→ more cell death. This is the most mechanistically straightforward Digoxin biomarker and would
+be testable with transport assays.
+
+```{r oscp1_digoxin, fig.width=9, fig.height=7}
+df_oscp1 <- data.frame(
+  sample = shared_val, Patient = patient_val,
+  viability = drug_mat_all[shared_val, "Digoxin"],
+  OSCP1 = fm[shared_val, "OSCP1"]
+) %>% filter(is.finite(viability), is.finite(OSCP1))
+
+rho_oscp1 <- suppressWarnings(cor(df_oscp1$OSCP1, df_oscp1$viability, method = "spearman"))
+
+p_oscp1 <- ggplot(df_oscp1, aes(x = OSCP1, y = viability)) +
+  geom_point(aes(color = Patient), size = 4, alpha = 0.8) +
+  geom_smooth(method = "lm", se = TRUE, color = "grey30",
+              linetype = "dashed", linewidth = 0.7) +
+  scale_color_manual(values = pcols) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+           label = sprintf("rho = %.2f (sensitivity)\nHigher OSCP1 \u2192 more drug uptake?",
+                           rho_oscp1),
+           size = 4, color = "grey20") +
+  labs(title = "OSCP1 [3s] Predicts Digoxin Sensitivity",
+       subtitle = "Organic solute carrier partner 1. May facilitate digoxin uptake into cells.",
+       x = "OSCP1 Abundance (normalized)", y = "Digoxin Viability") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "right")
+print(p_oscp1)
+ggsave("biomarker_figs/final_OSCP1_digoxin.pdf", p_oscp1, width = 9, height = 7)
+```
+
+## 8.3 All 6 Digoxin biomarkers
+
+Grid of all 6 Digoxin triple-hits, each panel labeled with the protein's function. The
+multi-factorial nature of Digoxin resistance is visible: 1 sensitivity marker (OSCP1, drug uptake)
+and 5 resistance markers spanning entirely different cellular processes. This is unique among the
+7 drugs — others show thematically coherent biomarkers (chaperone for HSP90, mitochondrial for
+MEK), while Digoxin engages diverse defense mechanisms.
+
+```{r digoxin_grid, fig.width=14, fig.height=8}
+dig_all <- c("OSCP1", "CYB561D2", "EEF2", "ZCCHC8", "ABRAXAS1", "DNAJC8")
+dig_all_in <- intersect(dig_all, colnames(fm))
+
+dig_functions <- c(
+  "OSCP1" = "Solute transporter",
+  "CYB561D2" = "Electron transfer",
+  "EEF2" = "Translation elongation",
+  "ZCCHC8" = "RNA surveillance",
+  "ABRAXAS1" = "DNA repair (BRCA1)",
+  "DNAJC8" = "HSP40 co-chaperone"
+)
+
+plots_dig <- lapply(dig_all_in, function(p) {
+  df <- data.frame(
+    sample = shared_val, Patient = patient_val,
+    viability = drug_mat_all[shared_val, "Digoxin"],
+    abundance = fm[shared_val, p]
+  ) %>% filter(is.finite(viability), is.finite(abundance))
+
+  rho <- suppressWarnings(cor(df$abundance, df$viability, method = "spearman"))
+  dir <- if (rho < 0) "sensitivity" else "resistance"
+
+  ggplot(df, aes(x = abundance, y = viability)) +
+    geom_point(aes(color = Patient), size = 2.5, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "grey30",
+                linetype = "dashed", linewidth = 0.6) +
+    scale_color_manual(values = pcols) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+             label = sprintf("rho = %.2f (%s)", rho, dir), size = 3.5, color = "grey20") +
+    labs(title = sprintf("%s [3s] \u2014 %s", p, dig_functions[p]),
+         x = "Abundance", y = "Viability") +
+    theme_bw(base_size = 10) +
+    theme(legend.position = "none")
+})
+
+p_dig_grid <- wrap_plots(plots_dig, ncol = 3) +
+  plot_annotation(
+    title = "Digoxin Biomarkers: Multi-Factorial Resistance Profile",
+    subtitle = "1 sensitivity marker (OSCP1) + 5 resistance markers spanning translation, RNA surveillance, DNA repair, and chaperone biology. DNAJC8 links to the broader HSP chaperone resistance axis."
+  )
+print(p_dig_grid)
+ggsave("biomarker_figs/final_digoxin_all_hits.pdf", p_dig_grid, width = 14, height = 8)
+```
+
+## 8.4 DNAJC8: stronger for Digoxin than for HSP90 inhibitors
+
+DNAJC8 is an HSP40 co-chaperone that appears in the chaperone heatmap, but its strongest signal
+is actually for Digoxin (rho = 0.45), not any HSP90 inhibitor (best is SNX-2112 at 0.35). This
+suggests DNAJC8's co-chaperone function is more relevant for buffering Digoxin's proteotoxic
+effects (ion imbalance from Na+/K+-ATPase disruption causes protein misfolding) than for
+buffering pharmacological HSP90 inhibition. DNAJC8 links to the broader HSP chaperone resistance
+axis but is primarily a Digoxin biomarker.
+
+```{r dnajc8_comparison, fig.width=14, fig.height=8}
+dnajc8_drugs <- intersect(c("Digoxin", "Onalespib", "SNX-2112", "KW-2478",
+                             "Ganetespib", "SNX-5422"), colnames(drug_mat_all))
+
+plots_dnajc8 <- lapply(dnajc8_drugs, function(d) {
+  df <- data.frame(
+    sample = shared_val, Patient = patient_val,
+    viability = drug_mat_all[shared_val, d],
+    DNAJC8 = fm[shared_val, "DNAJC8"]
+  ) %>% filter(is.finite(viability), is.finite(DNAJC8))
+
+  rho <- suppressWarnings(cor(df$DNAJC8, df$viability, method = "spearman"))
+  is_dig <- (d == "Digoxin")
+  cls <- if (is_dig) "Cardiac glycoside" else "HSP90 inhibitor"
+
+  ggplot(df, aes(x = DNAJC8, y = viability)) +
+    geom_point(aes(color = Patient), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "grey30",
+                linetype = "dashed", linewidth = 0.6) +
+    scale_color_manual(values = pcols) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.05, vjust = 1.5,
+             label = sprintf("rho = %.2f\n%s", rho, cls), size = 3.3, color = "grey20") +
+    labs(title = if (is_dig) paste0(d, " (discovery)") else d,
+         x = "DNAJC8 Abundance", y = "Viability") +
+    theme_bw(base_size = 11) +
+    theme(legend.position = "none",
+          plot.title = element_text(face = if (is_dig) "bold" else "plain"))
+})
+
+p_dnajc8 <- wrap_plots(plots_dnajc8, ncol = 3) +
+  plot_annotation(
+    title = "DNAJC8 [3s]: Stronger for Digoxin Than Any HSP90 Inhibitor",
+    subtitle = "HSP40 co-chaperone discovered as Digoxin biomarker (rho=0.45). Weaker for HSP90 drugs (rho 0.18-0.35)."
+  )
+print(p_dnajc8)
+ggsave("biomarker_figs/final_DNAJC8_digoxin_vs_hsp90.pdf", p_dnajc8, width = 14, height = 8)
+```
+
+---
+
+# 9. Pan-Drug Biomarker Candidates
+
+## 9.1 Rationale
+
+Beyond drug-specific biomarkers, we asked which proteins recur across multiple drugs. Proteins
+appearing as top correlates for several of the 7 drugs of interest (independent of mechanism)
+may represent fundamental determinants of organoid drug response — proteostasis, mitochondrial
+function, or other broad cellular states. We selected the 20 proteins most frequently appearing
+in the top 50 correlates across all 7 drugs and visualized their Spearman rho across the panel.
+
+## 9.2 Pan-drug heatmap of recurrent biomarkers
+
+Heatmap of the 20 most recurrent proteins × 7 drugs of interest. Drugs are on rows, proteins on
+columns. Clustering reveals two major patterns: (1) a chaperone block (HSP90AA1, HSPA4, CHORDC1)
+positively correlated with HSP90 inhibitors and Alvocidib, and (2) a metabolic/mitochondrial
+block (NDUFS2, OGDH, UQCRC2) negatively correlated with MEK inhibitors. The separation between
+HSP90 and MEK columns highlights how different mechanism classes engage distinct cellular
+vulnerabilities — there is no single "pan-drug" biomarker, but there are pan-drug biomarker
+themes (proteostasis, metabolism).
+
+```{r pan_drug_heatmap, fig.width=14, fig.height=6}
+# Find the 20 most recurrent proteins across the 7 drugs of interest (top-50 correlates per drug)
+top50_per_drug <- corr_global$cor_tbl %>%
+  filter(drug %in% drugs_matched) %>%
+  group_by(drug) %>%
+  arrange(desc(abs(cor))) %>%
+  slice_head(n = 50) %>%
+  ungroup()
+
+recurrent_proteins <- top50_per_drug %>%
+  group_by(feature) %>%
+  summarise(n_drugs = n_distinct(drug),
+            mean_abs_rho = mean(abs(cor), na.rm = TRUE),
+            .groups = "drop") %>%
+  filter(n_drugs >= 2) %>%
+  arrange(desc(n_drugs), desc(mean_abs_rho)) %>%
+  slice_head(n = 20)
+
+pan_proteins <- intersect(recurrent_proteins$feature, colnames(fm))
+
+pan_cor_mat <- matrix(NA, nrow = length(drugs_of_interest), ncol = length(pan_proteins),
+                       dimnames = list(drugs_of_interest, pan_proteins))
+for (d in drugs_of_interest) {
+  for (p in pan_proteins) {
+    pan_cor_mat[d, p] <- suppressWarnings(
+      cor(drug_mat_all[shared_val, d], fm[shared_val, p],
+          method = "spearman", use = "pairwise.complete.obs"))
+  }
+}
+
+pheatmap::pheatmap(
+  pan_cor_mat,
+  color = colorRampPalette(c("steelblue", "white", "firebrick"))(100),
+  breaks = seq(-1, 1, length.out = 101),
+  cluster_rows = TRUE, cluster_cols = TRUE,
+  display_numbers = TRUE, number_format = "%.2f", fontsize_number = 7,
+  legend_breaks = c(-1, -0.5, 0, 0.5, 1),
+  legend_labels = c("-1", "-0.5", "0", "0.5", "1\n\nSpearman\nrho"),
+  main = "Pan-Drug Biomarker Candidates \u2014 Spearman rho Across All 7 Drugs of Interest",
+  fontsize = 10, angle_col = 45,
+  filename = "biomarker_figs/final_pan_drug_heatmap.pdf",
+  width = 14, height = 6
+)
+```
+
+---
+
+# 10. Export Tables
+
+```{r export}
+write_csv(combined, "biomarker_tables/triple_hit_biomarkers_per_drug.csv")
+write_csv(drug_info, "biomarker_tables/drug_of_interest_summary.csv")
+write_csv(recurrent, "biomarker_tables/multi_strategy_recurrent.csv")
+
+cat("Exported tables to biomarker_tables/:\n")
+cat("  - triple_hit_biomarkers_per_drug.csv\n")
+cat("  - drug_of_interest_summary.csv\n")
+cat("  - multi_strategy_recurrent.csv\n")
+```
+
+---
+
+# Notes
+
+- **Positive rho** = higher protein abundance associated with higher viability (**resistance**)
+- **Negative rho** = higher protein abundance associated with lower viability (**sensitivity**)
+- All analysis uses **global proteomics only** via `uM_viability` metric
+- **[3s]** = triple-hit (passed Spearman correlation + extreme responders + within-patient pairs)
+- **[2s]** = 2-strategy recurrent across drugs (passed any 2 strategies, shared across drugs)
+- Sample size n = 20 organoids from 9 patients, 6 with multiple tumors
+- Feature matrix has 8,248 proteins with complete data across all samples
+- Standard FDR correction yields no significant hits; multi-strategy concordance is the recovery approach
+- Output figures: `biomarker_figs/final_*.pdf`
+- Output tables: `biomarker_tables/*.csv`
